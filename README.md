@@ -3,7 +3,7 @@
 **Private money that works for you.** Privacy Bank Chain is a Proof-of-Work blockchain that combines Monero-grade privacy with native, consensus-enforced banking primitives — no smart contracts, no trusted third parties, no company behind it.
 
 🌐 **Website & downloads: [privbank.finance](https://privbank.finance)**
-The full source code, pre-built node packages, GUI wallets (Windows/Linux), the CPU miner, the technical whitepaper and the launch guides are distributed from the official website.
+⏰ **The website goes live on 2026-08-31 at 20:00 UTC** — from that moment it will host the full source code, pre-built node packages, GUI wallets (Windows/Linux), the CPU miner, the technical whitepaper and the launch guides.
 
 💬 **Community: [Discord](https://discord.gg/UgkdkYXdJQ)**
 
