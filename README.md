@@ -7,6 +7,17 @@
 
 💬 **Community: [Discord](https://discord.gg/UgkdkYXdJQ)**
 
+## Partnership with PulseMining
+
+Privacy Bank Chain is developed **in partnership with [PulseMining](https://discord.gg/UgkdkYXdJQ)** — a mining community that scouts, tests and delivers high-potential coins turnkey every week: pool, miner, multi-language support and more.
+
+Join the PBC project channels on the PulseMining Discord:
+
+- 🇫🇷 [Français](https://discord.com/channels/1516526810458755263/1517540676089413732)
+- 🇬🇧 [English](https://discord.com/channels/1516526810458755263/1517540694775038084)
+- 🇷🇺 [Русский](https://discord.com/channels/1516526810458755263/1517540736751505560)
+- 🇪🇸 [Español](https://discord.com/channels/1516526810458755263/1517540713976561765)
+
 ---
 
 ## What makes PBC different
