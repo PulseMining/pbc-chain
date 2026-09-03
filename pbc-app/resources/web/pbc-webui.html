@@ -820,6 +820,11 @@ html, body {
       </div>
     </div>
 
+    <!-- ⛏ Pool Mining (Aria) — opt-in, off-chain data reported by the pool -->
+    <div class="panel" id="poolAriaPanel" style="margin-bottom:16px">
+      <div class="panel-body" id="poolAriaBody"></div>
+    </div>
+
     <!-- Allocation + Daily Revenue -->
     <div class="panel">
       <div class="panel-body" style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
@@ -949,13 +954,20 @@ html, body {
       </div>
     </div>
 
+    <!-- ⛏ Pool vesting (reported by Aria pool — off-chain) -->
+    <div class="panel" id="poolAriaVestPanel" style="margin-top:16px;display:none">
+      <div class="panel-header"><div class="panel-title">Pool vesting <span style="font-weight:400;font-size:11px;color:var(--text-dim)">— reported by Aria pool (off-chain)</span></div></div>
+      <div class="panel-body no-pad" id="poolAriaVestBody"></div>
+    </div>
+
     <!-- PBC 29/08: the old per-day mining table was removed (Stef) — its "pool
          mining" column was unreliable (interest withdraw payouts landed in it). -->
     <div class="panel" id="vestChartPanel">
       <div class="panel-header"><div class="panel-title">Unvested amount per day</div></div>
       <div class="panel-body">
         <div style="display:flex;gap:16px;margin-bottom:8px;font-size:11px">
-          <span><span style="display:inline-block;width:10px;height:10px;background:var(--gold);border-radius:2px;margin-right:4px"></span>Vesting unlocked that day (25% of each coinbase per tier reached)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--gold);border-radius:2px;margin-right:4px"></span>Solo mining unlocked that day (25% of each coinbase per tier reached)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--blue);border-radius:2px;margin-right:4px"></span>Aria pool unlocked that day (reported — shown when pool integration is on)</span>
         </div>
         <div class="chart-area" id="vestChart"></div>
       </div>
@@ -1292,15 +1304,22 @@ html, body {
         <thead><tr>
           <th>Day (yyyy-mm-dd UTC)</th><th class="right">Mining</th><th class="right">Interest</th><th class="right">Other credits</th>
           <th class="right">Transfers out</th><th class="right">Placements</th>
-          <th class="right">Fees</th><th class="right">Net cash</th><th class="right">Cumul.</th>
+          <th class="right">Fees</th><th class="right">Net cash</th><th class="right">Cumul.</th><th class="right">Balance (end of day)</th>
         </tr></thead>
         <tbody id="stmtBody"></tbody>
       </table>
-      <div style="padding:8px 12px;font-size:11px;color:var(--text-dim)">Placements (deposits created + obligations bought on the marketplace) are locked cash, not expenses — shown separately, excluded from Net cash. Cumul. = running net over the displayed period. Click a day to see its transactions.</div>
+      <div style="padding:8px 12px;font-size:11px;color:var(--text-dim)">Placements (deposits created + obligations bought on the marketplace) are locked cash, not expenses — shown separately, excluded from Net cash (but they DO reduce the Balance column, which tracks your real total wallet balance). Cumul. = running net over the displayed period. Balance = absolute total wallet balance rebuilt backwards from your current balance — click a day to see it per operation. Note: the "Liquid" (spendable) figure can temporarily show less than this balance right after an operation, because the change output matures for ~10 blocks (~10 min) — the funds are never gone, just maturing.</div>
     </div></div>
     <div class="panel" id="stmtChartPanel">
-      <div class="panel-header"><div class="panel-title">Daily Net Flow</div></div>
-      <div class="panel-body"><div class="chart-area" id="stmtChart"></div></div>
+      <div class="panel-header"><div class="panel-title">Daily Inflows</div></div>
+      <div class="panel-body"><div class="chart-area" id="stmtChart"></div>
+        <div style="padding:6px 4px 2px;font-size:11px;color:var(--text-dim);display:flex;gap:16px;flex-wrap:wrap">
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--gold);border-radius:2px;margin-right:4px"></span>Mining (coinbase)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px;margin-right:4px"></span>Interest (withdraw payouts)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--orange, #f0a050);border-radius:2px;margin-right:4px"></span>Interest (claim payouts)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--blue);border-radius:2px;margin-right:4px"></span>Other received (pool/transfers/sales)</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1319,8 +1338,15 @@ html, body {
     </div>
     <div class="cards cards-4" id="incomeCards"></div>
     <div class="panel" id="incomeChartPanel">
-      <div class="panel-header"><div class="panel-title">Daily Mining Revenue</div></div>
-      <div class="panel-body"><div class="chart-area" id="incomeChart"></div></div>
+      <div class="panel-header"><div class="panel-title">Daily Inflows</div></div>
+      <div class="panel-body"><div class="chart-area" id="incomeChart"></div>
+        <div style="padding:6px 4px 2px;font-size:11px;color:var(--text-dim);display:flex;gap:16px;flex-wrap:wrap">
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--gold);border-radius:2px;margin-right:4px"></span>Mining (coinbase)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--green);border-radius:2px;margin-right:4px"></span>Interest (withdraw payouts)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--orange, #f0a050);border-radius:2px;margin-right:4px"></span>Interest (claim payouts)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;background:var(--blue);border-radius:2px;margin-right:4px"></span>Other received (pool/transfers/sales)</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -2091,8 +2117,15 @@ async function loadDashboard() {
     const SPENDABLE_AGE = 4;
     try {
       const wdRes = await rpc('get_transfers', { out: true, in: true, pending: true, failed: false, pool: true });
+      // Phantom deposit self-send ins (same txid as a deposit out) must not inflate
+      // otherReceived — same defensive dedup as Statement/Income (0 on real wallets
+      // today, guards against wallet-rpc variants that emit them).
+      const depOutTxids = new Set(
+        (wdRes.out || []).filter(t => (t.subtype || '') === 'deposit').map(t => t.txid)
+      );
       (wdRes.in || []).forEach(t => {
         if (t.type === 'block') return;
+        if (depOutTxids.has(t.txid)) return;  // phantom deposit self-send
         otherReceived += Number(t.amount || 0);
       });
       [...(wdRes.in || []), ...(wdRes.out || []), ...(wdRes.pending || []), ...(wdRes.pool || [])].forEach(t => {
@@ -2118,6 +2151,9 @@ async function loadDashboard() {
     // subtype-based exclusion missed them and they were counted twice (in interest AND
     // here). Subtract the already-computed lifetime interest total instead.
     otherReceived = Math.max(0, otherReceived - totalInterestPaid);
+    window._otherReceivedLifetime = otherReceived;   // pool reconciliation line (Aria card)
+    poolAriaOnBalance(balance);                      // pool CSV refresh on new funds (Stef)
+    if (_poolAria.agg) poolAriaRender();             // re-render once otherReceived is known (init race)
     // Total lifetime income = everything earned (mining + interest + other received).
     const totalIncome = totalMined + totalInterestPaid + otherReceived;
 
@@ -2182,6 +2218,11 @@ async function loadDashboard() {
     document.getElementById('d-dep-pct').innerHTML =
       `${fmtPct(pDepLock)} locked` +
       (dep_claimed > 0 ? ` · ${fmtShort(dep_claimed)} earned` : '');
+
+    // Stash pure on-chain base values, then apply the Aria pool merge (no-op when
+    // pool data is absent or inconsistent — cards keep their on-chain values).
+    window._dashBase = { patrimony, vesting_locked, totalMined, totalInterestPaid, otherReceived, dep_claimable };
+    poolAriaApplyMerged();
 
     // Allocation donut
     const pWithdrawPending = patrimony > 0 ? withdrawPending / patrimony : 0;
@@ -2651,9 +2692,20 @@ async function loadVesting() {
     // un dépôt consomme les UTXOs (part dans la réserve du protocole), prouvé on-chain
     // (balance == entrées − dépôts au centime). L'ancien "− dep_locked" soustrayait
     // donc le principal une 2e fois (vesting affiché ~41 au lieu de ~341 chez Stef).
-    // Vesting verrouillé réel = balance − unlocked (fenêtre de 4 blocs des retraits
-    // frais incluse transitoirement — négligeable ici).
-    const vestingLocked = Math.max(0, totalBalance - unlockedBal);
+    // Vesting verrouillé réel = balance − unlocked − payouts de retrait encore en
+    // maturation (fenêtre SPENDABLE_AGE = 4 blocs) — même formule que le dashboard.
+    const SPENDABLE_AGE = 4;
+    let maturingInterestV = 0;
+    try {
+      const wdRes = await rpc('get_transfers', { out: true, in: false, pending: true, failed: false, pool: false });
+      [...(wdRes.out || []), ...(wdRes.pending || [])].forEach(t => {
+        if ((t.subtype || '') !== 'withdraw') return;
+        const confs = Number(t.confirmations || 0);
+        if (confs >= SPENDABLE_AGE) return;
+        maturingInterestV += (t.destinations || []).reduce((s, d) => s + Number(d.amount || 0), 0);
+      });
+    } catch(e) {}
+    const vestingLocked = Math.max(0, totalBalance - unlockedBal - maturingInterestV);
 
     // Show vesting tier cards: estimate how much is locked in each tier
     VEST_TIERS.forEach((tier, i) => {
@@ -2715,16 +2767,25 @@ async function loadVesting() {
     // "Vesting Released" is now the REAL cumulative amount whose vesting unlock
     // height has passed (25% of each coinbase per tier reached) — not the
     // spendable balance it wrongly showed before.
+    // PBC 03/09 (pool Aria): when the pool summary is consistent, merge Aria
+    // locked/released with the solo figures — breakdown in every sub.
+    const mPool = poolAriaMerged();
+    let ariaReleased = 0;
+    if (mPool) {
+      (_poolAria.entries || []).forEach(e => {
+        if (e.origin >= min_h && e.unlockH <= height) ariaReleased += e.amount;
+      });
+    }
     document.getElementById('vestSummaryCards').innerHTML = `
       <div class="card">
         <div class="card-label">Total Vesting Locked</div>
-        <div class="card-value gold" style="font-size:16px">${fmt(vestingLocked)}</div>
-        <div class="card-sub">locked across tiers 1–4</div>
+        <div class="card-value gold" style="font-size:16px">${fmt(mPool ? vestingLocked + mPool.locked : vestingLocked)}</div>
+        <div class="card-sub">${mPool ? `solo ${fmtShort(vestingLocked)} + Aria ${fmtShort(mPool.locked)} (pool-reported)` : 'locked across tiers 1–4'}</div>
       </div>
       <div class="card">
         <div class="card-label">Vesting Released</div>
-        <div class="card-value green" style="font-size:16px">${fmt(cumReleased)}</div>
-        <div class="card-sub">cumulative unlocked since genesis · ${fmt(vestingLocked)} still locked</div>
+        <div class="card-value green" style="font-size:16px">${fmt(cumReleased + (mPool ? ariaReleased : 0))}</div>
+        <div class="card-sub">cumulative unlocked ${min_h > 0 ? 'in the selected window' : 'since genesis'}${mPool ? ` — solo ${fmtShort(cumReleased)} + Aria ${fmtShort(ariaReleased)} (pool-reported)` : ''} · ${fmtShort(mPool ? vestingLocked + mPool.locked : vestingLocked)} still locked</div>
       </div>
     `;
 
@@ -2787,11 +2848,30 @@ async function loadVesting() {
     // vesting amount that actually unlocked that calendar day (25% of each
     // coinbase per tier reached; unlock dates estimated with the MEASURED
     // block time, never a hardcoded 60s).
+    // PBC 03/09 (pool Aria): stacked 2nd series — Aria credits whose unlock
+    // height has passed, grouped by estimated unlock day (same time base).
     {
       const uKeys = Object.keys(unvestedByDay).sort();
-      if (uKeys.length === 0) {
+      const ariaByDay = {};
+      if (mPool) {
+        const nowTs2 = Math.floor(Date.now() / 1000);
+        (_poolAria.entries || []).forEach(e => {
+          if (e.unlockH > 0 && e.unlockH <= height) {
+            const estTs = nowTs2 - (height - e.unlockH) * spbV;
+            const k = dayKeyFromTs(Math.floor(estTs));
+            ariaByDay[k] = (ariaByDay[k] || 0) + e.amount;
+          }
+        });
+      }
+      const allKeys = [...new Set([...uKeys, ...Object.keys(ariaByDay)])].sort();
+      if (allKeys.length === 0) {
         document.getElementById('vestChart').innerHTML =
           '<div style="color:var(--text-dim);font-size:12px;padding:8px">No vesting unlock reached yet — the first tier (24h / 1440 blocks) has not passed for any coinbase in this period.</div>';
+      } else if (mPool) {
+        drawMultiStackedBarChart('vestChart', [
+          { name: 'Solo mining', color: 'var(--gold)', values: allKeys.map(k => unvestedByDay[k] || 0) },
+          { name: 'Aria pool (reported)', color: 'var(--blue)', values: allKeys.map(k => ariaByDay[k] || 0) },
+        ], allKeys);
       } else {
         drawBarChart('vestChart', uKeys.map(k => unvestedByDay[k]), uKeys);
       }
@@ -4586,8 +4666,24 @@ async function loadStatement() {
     // Interest withdraw payouts: identified by txid from the OUTGOING side
     // (subtype 'withdraw'/'claim' set there) — their incoming duplicates are the
     // realized interest credits.
-    const payoutTxids = new Set(
-      (res.out || []).filter(t => (t.subtype || '') === 'withdraw' || (t.subtype || '') === 'claim')
+    const withdrawTxids = new Set(
+      (res.out || []).filter(t => (t.subtype || '') === 'withdraw')
+                     .map(t => t.txid)
+    );
+    const claimTxids = new Set(
+      (res.out || []).filter(t => (t.subtype || '') === 'claim')
+                     .map(t => t.txid)
+    );
+    // Union used for interest classification — a txid belongs to exactly ONE of the
+    // two sets (a tx has a single subtype), so the split cannot double-count.
+    const payoutTxids = new Set([...withdrawTxids, ...claimTxids]);
+    // PBC FIX (03/09): deposit self-sends can ALSO generate a spurious "in" entry
+    // (subtype empty) — same txid as the deposit "out". Without this dedup the
+    // Statement counted a phantom +amount credit on every deposit day (the same
+    // dedup loadTransfers already does). Withdraw/claim incoming entries are REAL
+    // payouts (interest) — only 'deposit' phantoms are dropped.
+    const depositOutTxids = new Set(
+      (res.out || []).filter(t => (t.subtype || '') === 'deposit')
                      .map(t => t.txid)
     );
 
@@ -4625,35 +4721,42 @@ async function loadStatement() {
     //   Fees = all fees paid · housekeeping (consolidation sweeps) never hits the numbers.
     const agg = {};
     const detail = {};
-    const initDay = () => ({ mining: 0, interest: 0, credits: 0, out: 0, placements: 0, fees: 0, claims: 0 });
+    const initDay = () => ({ mining: 0, interest: 0, claimInt: 0, credits: 0, out: 0, placements: 0, fees: 0, claims: 0 });
     const line = (key, item) => { (detail[key] = detail[key] || []).push(item); };
     const hhmm = ts => new Date((ts || 0) * 1000).toISOString().substring(11, 16);
 
     (res.in || []).forEach(t => {
+      if (t.type !== 'block' && depositOutTxids.has(t.txid)) return;  // phantom deposit self-send (dedup 03/09)
       const key = dayKeyFromTs(t.timestamp || 0);
       if (!agg[key]) agg[key] = initDay();
       const amt = Number(t.amount || 0);
       if (t.type === 'block') {
         agg[key].mining += amt;
-        line(key, { ts: t.timestamp, label: '⛏ Mining (coinbase)', amt: amt, fee: 0, txid: t.txid });
+        line(key, { ts: t.timestamp, label: '⛏ Mining (coinbase)', amt: amt, fee: 0, txid: t.txid, delta: amt });
       } else if (payoutTxids.has(t.txid)) {
-        agg[key].interest += amt;
-        line(key, { ts: t.timestamp, label: '🎁 Interest received (withdraw payout)', amt: amt, fee: 0, txid: t.txid });
+        // Split withdraw vs claim payouts (chart segments) — txid in exactly one set.
+        if (claimTxids.has(t.txid)) {
+          agg[key].claimInt += amt;
+          line(key, { ts: t.timestamp, label: '🎁 Interest received (claim payout)', amt: amt, fee: 0, txid: t.txid, delta: amt });
+        } else {
+          agg[key].interest += amt;
+          line(key, { ts: t.timestamp, label: '🎁 Interest received (withdraw payout)', amt: amt, fee: 0, txid: t.txid, delta: amt });
+        }
       } else {
         const pt = _txClassCache[t.txid];
         // PBC 30/08: type 11 (MARKET_PAYOUT_CLAIM) = seller interests payout →
         // Interest column; type 7 (TRANSFER_DEPOSIT) = sale price → Other credits.
         if (pt === 11) {
           agg[key].interest += amt;
-          line(key, { ts: t.timestamp, label: '💰 Marketplace payout (seller interests)', amt: amt, fee: 0, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '💰 Marketplace payout (seller interests)', amt: amt, fee: 0, txid: t.txid, delta: amt });
         } else if (pt === 7 || pt === 8) {
           // type 7 = legacy TRANSFER_DEPOSIT; type 8 incoming = the LOCK tx paying
           // the sale price to the seller (auto-match path, blockchain.cpp:8772).
           agg[key].credits += amt;
-          line(key, { ts: t.timestamp, label: '🏷 Marketplace sale — price received (deposit sold)', amt: amt, fee: 0, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '🏷 Marketplace sale — price received (deposit sold)', amt: amt, fee: 0, txid: t.txid, delta: amt });
         } else {
           agg[key].credits += amt;
-          line(key, { ts: t.timestamp, label: '↓ Transfer received', amt: amt, fee: 0, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '↓ Transfer received', amt: amt, fee: 0, txid: t.txid, delta: amt });
         }
       }
     });
@@ -4676,33 +4779,33 @@ async function loadStatement() {
       agg[key].fees += fee;
       if (sub === 'deposit') {
         agg[key].placements += amt;
-        line(key, { ts: t.timestamp, label: '🏦 Placement — deposit created (locked)', amt: -amt, fee: fee, txid: t.txid });
+        line(key, { ts: t.timestamp, label: '🏦 Placement — deposit created (locked)', amt: -amt, fee: fee, txid: t.txid, delta: -(amt + fee) });
       } else if (sub === 'claim') {
         agg[key].claims += 1;
-        line(key, { ts: t.timestamp, label: '🎁 Interest claim (fee only)', amt: 0, fee: fee, txid: t.txid });
+        line(key, { ts: t.timestamp, label: '🎁 Interest claim (fee only)', amt: 0, fee: fee, txid: t.txid, delta: -fee });
       } else if (sub === 'withdraw') {
-        line(key, { ts: t.timestamp, label: '↩ Withdraw broadcast (credited on incoming side)', amt: 0, fee: fee, txid: t.txid });
+        line(key, { ts: t.timestamp, label: '↩ Withdraw broadcast (credited on incoming side)', amt: 0, fee: fee, txid: t.txid, delta: -fee });
       } else {
         const pt = _txClassCache[t.txid];
         if (pt === 11) {
           // Marketplace payout claim — protocol tx drawing on the reserve, NOT a
           // transfer out (the +28.99 credit shows on the incoming side).
-          line(key, { ts: t.timestamp, label: '💰 Marketplace payout claim broadcast (seller interests, fee 0)', amt: 0, fee: 0, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '💰 Marketplace payout claim broadcast (seller interests, fee 0)', amt: 0, fee: 0, txid: t.txid, delta: 0 });
         } else if (pt === 8) {
           const lockAmt = amt > 0 ? amt : destSum;
           agg[key].placements += lockAmt;
-          line(key, { ts: t.timestamp, label: '🛒 Placement — obligation bought (marketplace lock)', amt: -lockAmt, fee: fee, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '🛒 Placement — obligation bought (marketplace lock)', amt: -lockAmt, fee: fee, txid: t.txid, delta: -(lockAmt + fee) });
         } else if (pt === 10) {
-          line(key, { ts: t.timestamp, label: '🏷 Marketplace listing / delist (fee only)', amt: 0, fee: fee, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '🏷 Marketplace listing / delist (fee only)', amt: 0, fee: fee, txid: t.txid, delta: -fee });
         } else if (pt === 9) {
-          line(key, { ts: t.timestamp, label: '✖ Marketplace lock cancel (fee only)', amt: 0, fee: fee, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '✖ Marketplace lock cancel (fee only)', amt: 0, fee: fee, txid: t.txid, delta: -fee });
         } else if (amt === 0 && destSum > 0 && toSelf) {
-          line(key, { ts: t.timestamp, label: '⟲ UTXO consolidation (housekeeping, fee only)', amt: 0, fee: fee, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '⟲ UTXO consolidation (housekeeping, fee only)', amt: 0, fee: fee, txid: t.txid, delta: -fee });
         } else if (amt === 0 && destSum === 0) {
-          line(key, { ts: t.timestamp, label: '⚙ Protocol tx (fee only)', amt: 0, fee: fee, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '⚙ Protocol tx (fee only)', amt: 0, fee: fee, txid: t.txid, delta: -fee });
         } else {
           agg[key].out += amt;
-          line(key, { ts: t.timestamp, label: '↑ Transfer sent', amt: -amt, fee: fee, txid: t.txid });
+          line(key, { ts: t.timestamp, label: '↑ Transfer sent', amt: -amt, fee: fee, txid: t.txid, delta: -(amt + fee) });
         }
       }
     });
@@ -4710,35 +4813,58 @@ async function loadStatement() {
     const dayKeys = Object.keys(agg).sort();
     const tbody = document.getElementById('stmtBody');
     if (dayKeys.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="9" class="text" style="text-align:center;padding:20px;color:var(--text-dim)">No data for this period</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="text" style="text-align:center;padding:20px;color:var(--text-dim)">No data for this period</td></tr>';
       return;
     }
+
+    // PBC FIX (03/09): absolute running balance, rebuilt BACKWARDS from the current
+    // wallet balance (get_balance). Placements and fees reduce it (cash that left the
+    // liquid balance). This is the TOTAL balance — the spendable "Liquid" can be
+    // temporarily lower right after an op (change output maturing ~10 blocks).
+    let balRunning = null;
+    try {
+      const b = await rpc('get_balance');
+      let periodDelta = 0;
+      dayKeys.forEach(k => { const d = agg[k]; periodDelta += d.mining + d.interest + d.claimInt + d.credits - d.out - d.placements - d.fees; });
+      balRunning = Number(b.balance || 0) - periodDelta;   // balance at period start
+    } catch(e) { /* balance unavailable → column shows '—' */ }
 
     let cumul = 0;
     tbody.innerHTML = dayKeys.map(key => {
       const d = agg[key];
-      const net = d.mining + d.interest + d.credits - d.out - d.fees;
+      const net = d.mining + d.interest + d.claimInt + d.credits - d.out - d.fees;
       cumul += net;
       const netColor = net >= 0 ? 'var(--green)' : 'var(--red)';
+      // Running balance: day start = balRunning, end-of-day after applying the day's delta
+      let balLine = balRunning;
+      let dayBalEnd = null;
+      if (balRunning !== null) {
+        balRunning += d.mining + d.interest + d.claimInt + d.credits - d.out - d.placements - d.fees;
+        dayBalEnd = balRunning;
+      }
       const det = (detail[key] || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
-      const detRows = det.map(x =>
-        `<tr class="stmt-det" data-day="${key}" style="display:none;background:var(--bg)">
+      const detRows = det.map(x => {
+        if (balLine !== null) balLine += Number(x.delta || 0);
+        return `<tr class="stmt-det" data-day="${key}" style="display:none;background:var(--bg)">
           <td class="text" style="padding-left:26px;color:var(--text-dim)">${hhmm(x.ts)}</td>
           <td colspan="4" style="color:var(--text-dim);font-size:12px">${x.label} <code style="font-size:9px">${(x.txid || '').slice(0, 12)}…</code></td>
           <td class="right" style="color:${x.amt > 0 ? 'var(--green)' : x.amt < 0 ? 'var(--gold)' : 'var(--text-dim)'}">${x.amt !== 0 ? fmt(x.amt) : '—'}</td>
           <td class="right" style="color:var(--text-dim)">${x.fee > 0 ? fmt(x.fee) : '—'}</td>
-          <td colspan="2"></td>
-        </tr>`).join('');
+          <td class="right" style="color:var(--text-dim);font-size:11px" title="Total wallet balance after this operation (vesting and maturing change included)">${balLine !== null ? fmt(balLine) : '—'}</td>
+          <td></td>
+        </tr>`;
+      }).join('');
       return `<tr class="stmt-day" data-day="${key}" style="cursor:pointer" title="Click to expand the day's transactions">
         <td class="text stmt-arrow">▸ ${key}</td>
         <td class="right gold">${d.mining > 0 ? fmt(d.mining) : '—'}</td>
-        <td class="right" style="color:var(--green)">${d.interest > 0 ? fmt(d.interest) : '—'}</td>
+        <td class="right" style="color:var(--green)">${(d.interest + d.claimInt) > 0 ? fmt(d.interest + d.claimInt) : '—'}</td>
         <td class="right" style="color:var(--green)">${d.credits > 0 ? fmt(d.credits) : '—'}</td>
         <td class="right">${d.out > 0 ? fmt(d.out) : '—'}</td>
         <td class="right" style="color:var(--blue)">${d.placements > 0 ? fmt(d.placements) : '—'}</td>
         <td class="right">${d.fees > 0 ? fmt(d.fees) : '—'}</td>
         <td class="right" style="color:${netColor}">${fmt(net)}</td>
         <td class="right" style="color:${netColor}">${fmt(cumul)}</td>
+        <td class="right" style="color:var(--text)" title="Total wallet balance at end of day (vesting and maturing change included)">${dayBalEnd !== null ? fmt(dayBalEnd) : '—'}</td>
       </tr>` + detRows;
     }).join('');
 
@@ -4755,9 +4881,15 @@ async function loadStatement() {
       });
     });
 
-    drawBarChart('stmtChart',
-      dayKeys.map(k => agg[k].mining + agg[k].interest + agg[k].credits - agg[k].out - agg[k].fees),
-      dayKeys);
+    // PBC 03/09: stacked inflow composition per day — mining / interest (withdraw) /
+    // interest (claim) / other received. The withdraw/claim split uses disjoint txid
+    // sets (one subtype per tx) → no double counting possible.
+    drawMultiStackedBarChart('stmtChart', [
+      { name: 'Mining (coinbase)',       color: 'var(--gold)',   values: dayKeys.map(k => agg[k].mining) },
+      { name: 'Interest (withdraw)',     color: 'var(--green)',  values: dayKeys.map(k => agg[k].interest) },
+      { name: 'Interest (claim)',        color: 'var(--orange, #f0a050)', values: dayKeys.map(k => agg[k].claimInt) },
+      { name: 'Other received',          color: 'var(--blue)',   values: dayKeys.map(k => agg[k].credits) },
+    ], dayKeys);
 
   } catch (e) {
     toast('Statement: ' + e.message, 'error');
@@ -4784,77 +4916,121 @@ async function loadIncome() {
 
     // PBC 29/08: interest withdraw payouts arrive INCOMING with fee=0 and were
     // counted as "mined" by the old fee==0 test. Identify them by txid from the
-    // outgoing side (subtype 'withdraw' set there) and count them as REALIZED
+    // outgoing side (subtype 'withdraw'/'claim' set there) and count them as REALIZED
     // deposit rewards for their day instead. Mining = strict coinbase only.
     const payoutTxids = new Set(
-      (res.out || []).filter(t => (t.subtype || '') === 'withdraw')
+      (res.out || []).filter(t => (t.subtype || '') === 'withdraw' || (t.subtype || '') === 'claim')
+                     .map(t => t.txid)
+    );
+    // PBC 03/09: split withdraw vs claim payouts for the chart segments — the two
+    // txid sets are disjoint (one subtype per tx) → no double counting.
+    const claimTxids = new Set(
+      (res.out || []).filter(t => (t.subtype || '') === 'claim')
+                     .map(t => t.txid)
+    );
+    // PBC FIX (03/09): drop phantom "in" duplicates of deposit self-sends (same txid
+    // as the deposit "out") — otherwise every deposit inflated "other received".
+    const depositOutTxids = new Set(
+      (res.out || []).filter(t => (t.subtype || '') === 'deposit')
                      .map(t => t.txid)
     );
 
-    // Aggregate mining income by day
+    // Aggregate income by day — PBC FIX (03/09): "other received" (pool payouts,
+    // transfers in, market sales) is now tracked, same convention as the dashboard.
     const agg = {};
     (res.in || []).forEach(t => {
+      if (t.type !== 'block' && depositOutTxids.has(t.txid)) return;  // phantom deposit self-send
       const key = dayKeyFromTs(t.timestamp || 0);
-      if (!agg[key]) agg[key] = { mined: 0, rewards: 0 };
+      if (!agg[key]) agg[key] = { mined: 0, rewards: 0, claimInt: 0, other: 0 };
       if (t.type === 'block') {
         agg[key].mined += Number(t.amount || 0);
       } else if (payoutTxids.has(t.txid)) {
-        agg[key].rewards += Number(t.amount || 0);  // realized interest (withdrawn)
+        if (claimTxids.has(t.txid)) agg[key].claimInt += Number(t.amount || 0);  // realized interest (claim)
+        else                        agg[key].rewards  += Number(t.amount || 0); // realized interest (withdraw)
+      } else {
+        agg[key].other += Number(t.amount || 0);    // pool payouts, transfers received, market sales
       }
     });
 
     // PBC FIX (wallet-scope, Option A): deposit rewards = ONLY this wallet's deposits.
-    // Previous code called the daemon RPC get_deposit_reward_history, which aggregates ALL
-    // on-chain deposits (no owner_key in the response) → it counted rewards that do NOT
-    // belong to the connected wallet (inflating Deposit Rewards / Total Income / Projected).
-    // get_deposits_accrued is wallet-scoped. Trade-off: no per-day breakdown wallet-side
-    // → all rewards placed on today.
-    let totalRewards = 0;
+    // get_deposits_accrued is wallet-scoped. PBC FIX (03/09): accrued rewards are
+    // UNREALIZED (still locked at protocol) → shown on their OWN card, EXCLUDED from
+    // Total Income (dashboard convention: claimable lands in income once withdrawn).
+    let accruedRewards = 0;
     try {
       const deps = await rpc('get_deposits_accrued', { filter: 'all', include_spent: false });
       if (deps.deposits) {
-        const today = dayKeyFromTs(Math.floor(Date.now()/1000));
-        if (!agg[today]) agg[today] = { mined: 0, rewards: 0 };
         deps.deposits.forEach(d => {
-          const cl = Number(d.claimable || 0) + Number(d.accumulated_reward || 0);
-          if (cl > 0) agg[today].rewards += cl;
+          accruedRewards += Number(d.claimable || 0) + Number(d.accumulated_reward || 0);
         });
       }
     } catch(e2) { console.warn('Income: wallet deposit rewards unavailable:', e2.message); }
 
     const dayKeys = Object.keys(agg).sort();
-    let totalMined = 0;
-    dayKeys.forEach(k => { totalMined += agg[k].mined; totalRewards += agg[k].rewards; });
+    let totalMined = 0, totalRewards = 0, totalOther = 0;
+    dayKeys.forEach(k => { totalMined += agg[k].mined; totalRewards += agg[k].rewards + agg[k].claimInt; totalOther += agg[k].other; });
     const avgPerDay = totalMined / Math.max(dayKeys.length, 1);
     const avgRewards = totalRewards / Math.max(dayKeys.length, 1);
+    const avgOther = totalOther / Math.max(dayKeys.length, 1);
     const periodLabel = val === 'all' ? 'all time' : numDays + 'd';
+
+    // PBC 03/09 (pool Aria): merge pool earnings into Total Mined / Total Income
+    // on the ALL TIME view only — the pool paid/available split is lifetime, a
+    // per-period split is not available (period cards stay on-chain, noted).
+    const mPool = poolAriaMerged();
+    const mergeAll = mPool && val === 'all';
+    let tiMerged = 0, nonPoolSafe = 0, reconWarn = '';
+    if (mergeAll) {
+      const nonPool = totalOther - mPool.paid;
+      nonPoolSafe = Math.max(0, nonPool);
+      tiMerged = totalMined + mPool.credited + totalRewards + nonPoolSafe;
+      if (nonPool < -0.01 * COIN)
+        reconWarn = `<br><span style="color:var(--orange,#f0a050)">⚠ reconciliation: pool paid (${fmtShort(mPool.paid)}) exceeds on-chain non-coinbase received (${fmtShort(totalOther)})</span>`;
+    }
 
     document.getElementById('incomeCards').innerHTML = `
       <div class="card">
         <div class="card-label">Total Mined (${periodLabel})</div>
-        <div class="card-value gold" style="font-size:18px">${fmt(totalMined)}</div>
-        <div class="card-sub">PBC</div>
+        <div class="card-value gold" style="font-size:18px">${fmt(mergeAll ? totalMined + mPool.credited : totalMined)}</div>
+        <div class="card-sub">${mergeAll ? `solo ${fmtShort(totalMined)} + Aria pool ${fmtShort(mPool.credited)} (reported)` : (mPool ? 'PBC — solo mining (coinbase) · Aria pool earnings in the « all » view' : 'PBC — solo mining (coinbase)')}</div>
       </div>
       <div class="card">
-        <div class="card-label">Deposit Rewards (${periodLabel})</div>
+        <div class="card-label">Interest Realized (${periodLabel})</div>
         <div class="card-value green" style="font-size:18px">${fmt(totalRewards)}</div>
-        <div class="card-sub">${fmtShort(avgRewards)} avg/day</div>
+        <div class="card-sub">${fmtShort(avgRewards)} avg/day — withdrawn/claimed deposit rewards</div>
       </div>
       <div class="card">
-        <div class="card-label">Total Income</div>
-        <div class="card-value" style="font-size:18px">${fmt(totalMined + totalRewards)}</div>
-        <div class="card-sub">${fmtShort(avgPerDay + avgRewards)} avg/day</div>
+        <div class="card-label">Other Received (${periodLabel})</div>
+        <div class="card-value green" style="font-size:18px">${fmt(totalOther)}</div>
+        <div class="card-sub">${fmtShort(avgOther)} avg/day — pool payouts, transfers, market sales</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Total Income (${periodLabel})</div>
+        <div class="card-value" style="font-size:18px">${fmt(mergeAll ? tiMerged : totalMined + totalRewards + totalOther)}</div>
+        <div class="card-sub">${mergeAll
+          ? `mining ${fmtShort(totalMined)} solo + ${fmtShort(mPool.credited)} pool · interest ${fmtShort(totalRewards)} · +${fmtShort(nonPoolSafe)} other (non-pool)${reconWarn}`
+          : `mining ${fmtShort(totalMined)} + interest ${fmtShort(totalRewards)} + other ${fmtShort(totalOther)}`}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">Deposit Rewards Accrued</div>
+        <div class="card-value" style="font-size:18px;color:var(--blue)">${fmt(accruedRewards)}</div>
+        <div class="card-sub">not yet realized — lands in income once withdrawn/claimed</div>
       </div>
       <div class="card">
         <div class="card-label">Projected / Year</div>
-        <div class="card-value green" style="font-size:18px">${fmtShort((avgPerDay + avgRewards) * 365)}</div>
-        <div class="card-sub">PBC (at current rate)</div>
+        <div class="card-value green" style="font-size:18px">${fmtShort((avgPerDay + avgRewards + avgOther) * 365)}</div>
+        <div class="card-sub">PBC (realized income at current rate)</div>
       </div>
     `;
 
-    drawBarChart('incomeChart',
-      dayKeys.map(k => agg[k].mined + agg[k].rewards),
-      dayKeys);
+    // PBC 03/09: same stacked inflow composition as the Statement tab (visual
+    // coherence between tabs) — disjoint withdraw/claim txid sets, no double count.
+    drawMultiStackedBarChart('incomeChart', [
+      { name: 'Mining (coinbase)',       color: 'var(--gold)',   values: dayKeys.map(k => agg[k].mined) },
+      { name: 'Interest (withdraw)',     color: 'var(--green)',  values: dayKeys.map(k => agg[k].rewards) },
+      { name: 'Interest (claim)',        color: 'var(--orange, #f0a050)', values: dayKeys.map(k => agg[k].claimInt) },
+      { name: 'Other received',          color: 'var(--blue)',   values: dayKeys.map(k => agg[k].other) },
+    ], dayKeys);
 
   } catch (e) {
     toast('Income: ' + e.message, 'error');
@@ -5180,7 +5356,54 @@ function drawStackedBarChart(containerId, vestedVals, unvestedVals, labels) {
   container.innerHTML = svg;
 }
 
-// ─── Modal close on overlay click ────────────────────────────
+// PBC 03/09: generic N-series stacked bar chart (Statement "Daily Inflows").
+// series = [{ name, color, values[] }] — stacked bottom-up in array order.
+function drawMultiStackedBarChart(containerId, series, labels) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  const W = 800, H = 200, pad = { top: 10, right: 10, bottom: 30, left: 60 };
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+
+  const n = labels.length;
+  const totals = [];
+  for (let i = 0; i < n; i++) totals.push(series.reduce((s, sr) => s + (sr.values[i] || 0), 0));
+  const max = Math.max(...totals, 1);
+  const barW = Math.max(3, Math.min(24, (chartW / n) - 2));
+  const gap = (chartW - barW * n) / (n + 1);
+
+  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">`;
+
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + chartH * (1 - i / 4);
+    const val = fmtShort(max * i / 4);
+    svg += `<line x1="${pad.left}" y1="${y}" x2="${W-pad.right}" y2="${y}" stroke="var(--border)" stroke-width="0.5"/>`;
+    svg += `<text x="${pad.left-6}" y="${y+3}" text-anchor="end" fill="var(--text-muted)" font-size="9" font-family="var(--mono)">${val}</text>`;
+  }
+
+  for (let i = 0; i < n; i++) {
+    const x = pad.left + gap + i * (barW + gap);
+    let accH = 0;
+    series.forEach(sr => {
+      const v = sr.values[i] || 0;
+      if (v <= 0) return;
+      const h = (v / max) * chartH;
+      const y = pad.top + chartH - accH - h;
+      svg += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" rx="1" fill="${sr.color}" opacity="0.9">
+        <title>${labels[i]} — ${sr.name}: ${fmt(v)} PBC</title>
+      </rect>`;
+      accH += h;
+    });
+    if (n <= 14 || i % Math.ceil(n / 10) === 0) {
+      const label = labels[i] ? labels[i].substring(5) : '';
+      svg += `<text x="${x + barW/2}" y="${H - 4}" text-anchor="middle" fill="var(--text-muted)" font-size="8" font-family="var(--mono)">${label}</text>`;
+    }
+  }
+
+  svg += '</svg>';
+  container.innerHTML = svg;
+}
 
 document.querySelectorAll('.modal-overlay').forEach(m => {
   m.addEventListener('click', e => {
@@ -5468,6 +5691,370 @@ async function updateNodePeers() {
   }
 }
 
+// ─── ⛏ POOL ARIA INTEGRATION (opt-in) ──────────────────────────────────────
+// Off-chain data reported by the Aria pool (vesting CSV). Golden rules (dossier
+// IMPLEMENTATION_POOL_ARIA_CSV.md) : toggle OFF by default → ZERO network request ;
+// NEVER merged silently into on-chain figures (patrimony / Total Income / vesting) ;
+// every pool figure is labelled "reported by Aria pool (off-chain)" ; miners not on
+// Aria keep exactly today's display.
+const _poolAria = {
+  enabled: (() => { try { return localStorage.getItem('pbc_pool_aria_enabled') === '1'; } catch(e) { return false; } })(),
+  loading: false,
+  entries: null,        // parsed CSV rows
+  agg: null,            // aggregates
+  lastFetch: 0,         // last attempt (ms)
+  lastOk: 0,            // last successful fetch (ms)
+  error: null,          // last error string
+  noData: false,        // pool has no data for this address (non-Aria miner)
+  lastBalance: null,    // for the "new funds received" trigger
+};
+
+function poolAriaSupported() {
+  return typeof window.pbcPool !== 'undefined' && window.pbcPool &&
+         typeof window.pbcPool.fetchVesting === 'function';
+}
+
+// Merged-view gate: returns the atomic pool figures ONLY when everything is
+// consistent (toggle ON, data loaded, summary present and cross-checked C9).
+// receivable = credited − paid = locked + available → provably NOT yet on-chain.
+function poolAriaMerged() {
+  const P = _poolAria;
+  if (!P.enabled || !P.agg || !P.summary) return null;
+  return {
+    credited: P.summary.total_credited,
+    locked: P.summary.locked,
+    unlocked: P.summary.unlocked,
+    paid: P.summary.paid_total,
+    available: P.summary.available_total,
+    receivable: P.summary.total_credited - P.summary.paid_total,
+  };
+}
+
+// Merge Aria figures into the dashboard cards (exact arithmetic, breakdown in
+// the sub of every touched card). loadDashboard always writes the pure on-chain
+// values first, then calls this — so a missing/inconsistent pool state leaves
+// the on-chain display strictly unchanged.
+function poolAriaApplyMerged() {
+  const b = window._dashBase;
+  const m = poolAriaMerged();
+  if (!b || !m) return;
+  const q = (id) => document.querySelector('#' + id + ' + .card-sub');
+
+  // Total Patrimony = on-chain patrimony + pool receivable (locked + available)
+  const pat2 = b.patrimony + m.receivable;
+  const pctReceived = m.credited > 0 ? ((m.paid / m.credited) * 100).toFixed(1) : '0';
+  document.getElementById('d-patrimony').textContent = fmtShort(pat2);
+  document.getElementById('d-patrimony-sub').innerHTML =
+    `PBC — on-chain ${fmtShort(b.patrimony)} (held, incl. received pool payouts)` +
+    ` · <span style="color:var(--blue)">+ Aria pool ${fmtShort(m.receivable)} receivable (off-chain)</span>` +
+    `<br><span style="color:var(--text-muted);font-size:11px">= received + receivable · ${pctReceived}% of pool earnings already received</span>` +
+    (b.dep_claimable > 0 ? ` · ${fmtShort(b.dep_claimable)} claimable` : '');
+
+  // Vesting Locked = solo vesting + Aria locked (both provably unpaid/unvested)
+  document.getElementById('d-vesting').textContent = fmtShort(b.vesting_locked + m.locked);
+  document.getElementById('d-vest-pct').innerHTML =
+    fmtPct(pat2 > 0 ? (b.vesting_locked + m.locked) / pat2 : 0) + ' of patrimony' +
+    `<br><span style="color:var(--text-muted);font-size:11px">solo ${fmtShort(b.vesting_locked)} + Aria ${fmtShort(m.locked)} (pool-reported)</span>`;
+
+  // Total Mined = solo coinbase + Aria credited (no overlap — exact)
+  document.getElementById('d-total-mined').textContent = fmtShort(b.totalMined + m.credited);
+  if (q('d-total-mined'))
+    q('d-total-mined').innerHTML = `solo ${fmtShort(b.totalMined)} + Aria pool ${fmtShort(m.credited)} (reported)`;
+
+  // Total Income = solo + interest + Aria credited + (otherReceived − pool paid)
+  // The pool paid part is REMOVED from otherReceived (it is inside credited) →
+  // no double count. Guard: negative remainder = reconciliation warning.
+  const nonPool = b.otherReceived - m.paid;
+  const nonPoolSafe = Math.max(0, nonPool);
+  const ti2 = b.totalMined + m.credited + b.totalInterestPaid + nonPoolSafe;
+  document.getElementById('d-total-income').textContent = fmtShort(ti2);
+  let tiSub = `mining ${fmtShort(b.totalMined)} solo + ${fmtShort(m.credited)} pool` +
+    ` · interest ${fmtShort(b.totalInterestPaid)} · +${fmtShort(nonPoolSafe)} other (non-pool)` +
+    (b.dep_claimable > 0 ? ` · ${fmtShort(b.dep_claimable)} claimable not yet included` : '');
+  if (nonPool < -0.01 * COIN)
+    tiSub += `<br><span style="color:var(--orange,#f0a050)">⚠ reconciliation: pool-reported paid (${fmtShort(m.paid)}) exceeds on-chain non-coinbase received (${fmtShort(b.otherReceived)}) — payouts may be in flight or attributed differently</span>`;
+  document.getElementById('d-total-income-sub').innerHTML = tiSub;
+}
+
+
+async function poolAriaToggle(on) {
+  _poolAria.enabled = !!on;
+  try { localStorage.setItem('pbc_pool_aria_enabled', on ? '1' : '0'); } catch(e) {}
+  if (on) { _poolAria.lastFetch = 0; poolAriaFetch('toggle'); }
+  else poolAriaRender();
+}
+
+async function poolAriaFetch(reason) {
+  if (!_poolAria.enabled || !poolAriaSupported()) return;
+  const now = Date.now();
+  if (_poolAria.loading) return;
+  if (reason === 'balance' && now - _poolAria.lastFetch < 120000) return;  // debounce 2 min
+  _poolAria.loading = true;
+  _poolAria.lastFetch = now;
+  poolAriaRender();
+  try {
+    const a = await rpc('get_address');
+    const address = a.address || '';
+    if (!address) throw new Error('wallet address unavailable');
+    const r = await window.pbcPool.fetchVesting(address);
+    if (!r || r.ok !== true) throw new Error((r && r.error) ? r.error : 'fetch failed');
+    if (r.status === 404 || !r.body || !r.body.trim()) {
+      _poolAria.noData = true; _poolAria.entries = null; _poolAria.agg = null;
+      _poolAria.error = null; _poolAria.lastOk = Date.now();
+    } else {
+      const parsed = _poolAriaParse(r.body);
+      if (parsed.empty) {
+        _poolAria.noData = true; _poolAria.entries = null; _poolAria.agg = null;
+        _poolAria.summary = null; _poolAria.summaryWarn = null;
+      } else {
+        _poolAria.noData = false;
+        _poolAria.entries = parsed.entries;
+        _poolAria.agg = parsed.agg;
+        // Summary JSON (paid/available split — Aria, 03/09) + cross-checks C9 :
+        // internal consistency (locked+unlocked=credited, paid+available=unlocked)
+        // AND CSV aggregates vs summary (to the cent). Any mismatch → merged view
+        // DISABLED, pool figures shown separately with a warning (never silently).
+        _poolAria.summary = null;
+        _poolAria.summaryWarn = null;
+        if (r.summary && r.summary.atomic) {
+          const A = r.summary.atomic;
+          const EPS = 0.01 * COIN;
+          const okInternal =
+            Math.abs((A.locked + A.unlocked) - A.total_credited) <= EPS &&
+            Math.abs((A.paid_total + A.available_total) - A.unlocked) <= EPS;
+          const okCsv =
+            Math.abs(A.locked - parsed.agg.lockedTotal) <= EPS &&
+            Math.abs(A.unlocked - parsed.agg.unlockedTotal) <= EPS &&
+            Math.abs(A.total_credited - parsed.agg.totalCredited) <= EPS;
+          if (okInternal && okCsv) {
+            _poolAria.summary = A;   // atomic ints — source of truth for merged view
+          } else {
+            _poolAria.summaryWarn = 'pool summary/CSV mismatch — pool figures shown separately (not merged)';
+          }
+        } else if (r.summaryError) {
+          _poolAria.summaryWarn = 'paid/available split unavailable (' + r.summaryError + ') — merged view disabled';
+        }
+      }
+      _poolAria.error = null; _poolAria.lastOk = Date.now();
+    }
+  } catch (e) {
+    _poolAria.error = e.message || 'network error';
+  } finally {
+    _poolAria.loading = false;
+    poolAriaRender();
+    poolAriaApplyMerged();
+  }
+}
+
+// Parse + integrity checks (dossier §7 C1/C2) — any violation = hard error, NO
+// partial figures ever displayed. CSV amounts are PBC decimals → converted to
+// atomic units for fmt().
+function _poolAriaParse(text) {
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length === 0) return { empty: true };
+  const header = lines[0].toLowerCase().replace(/\s/g, '');
+  if (!header.startsWith('unlock_height,tier,origin_block,amount_pbc'))
+    throw new Error('unexpected CSV format (header)');
+  const entries = [];
+  for (let i = 1; i < lines.length; i++) {
+    const c = lines[i].split(',');
+    if (c.length < 6) throw new Error('unexpected CSV format (row ' + (i + 1) + ')');
+    entries.push({
+      unlockH: parseInt(c[0], 10),
+      tier: parseInt(c[1], 10),
+      origin: parseInt(c[2], 10),
+      amount: Math.round(parseFloat(c[3]) * COIN),   // PBC → atomic
+      eta: c[4],
+      status: c[5].toLowerCase(),
+    });
+  }
+  if (entries.length === 0) return { empty: true };
+
+  // C1: every origin_block must have exactly the 4 tiers {1,2,3,4}
+  const byOrigin = {};
+  entries.forEach(e => {
+    (byOrigin[e.origin] = byOrigin[e.origin] || {})[e.tier] = true;
+  });
+  for (const o of Object.keys(byOrigin)) {
+    const t = byOrigin[o];
+    if (!(t[1] && t[2] && t[3] && t[4]) || Object.keys(t).length !== 4)
+      throw new Error('pool data integrity check failed (incomplete tiers for block ' + o + ')');
+  }
+
+  // C2: tier sums each ≈ 25% of the grand total (±0.5 pt)
+  const tierSum = { 1: 0, 2: 0, 3: 0, 4: 0 };
+  let total = 0;
+  entries.forEach(e => { tierSum[e.tier] += e.amount; total += e.amount; });
+  for (let k = 1; k <= 4; k++) {
+    const pct = total > 0 ? (tierSum[k] / total) * 100 : 0;
+    if (Math.abs(pct - 25) > 0.5)
+      throw new Error('pool data integrity check failed (tier split ≠ 25%)');
+  }
+
+  // Aggregates
+  const agg = {
+    totalCredited: total,
+    lockedTotal: 0, unlockedTotal: 0,
+    tiers: [null, { locked: 0, firstH: Infinity, lastH: 0 }, { locked: 0, firstH: Infinity, lastH: 0 },
+                  { locked: 0, firstH: Infinity, lastH: 0 }, { locked: 0, firstH: Infinity, lastH: 0 }],
+  };
+  entries.forEach(e => {
+    if (e.status === 'locked') {
+      agg.lockedTotal += e.amount;
+      const tp = agg.tiers[e.tier];
+      tp.locked += e.amount;
+      if (e.unlockH < tp.firstH) tp.firstH = e.unlockH;
+      if (e.unlockH > tp.lastH) tp.lastH = e.unlockH;
+    } else {
+      agg.unlockedTotal += e.amount;
+    }
+  });
+  return { empty: false, entries, agg };
+}
+
+function _poolAriaAge() {
+  if (!_poolAria.lastOk) return null;
+  const m = Math.floor((Date.now() - _poolAria.lastOk) / 60000);
+  return m < 1 ? 'just now' : m + ' min ago';
+}
+
+// Dashboard card render — all states explicit (dossier §6.1)
+function poolAriaRender() {
+  const body = document.getElementById('poolAriaBody');
+  if (!body) return;
+  const P = _poolAria;
+  const toggle = `<label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;white-space:nowrap">
+      <input type="checkbox" id="poolAriaChk" ${P.enabled ? 'checked' : ''} onchange="poolAriaToggle(this.checked)" style="width:16px;height:16px;accent-color:var(--gold)">
+      <span style="font-size:12px;color:var(--text-dim)">${P.enabled ? 'enabled' : 'enable'}</span></label>`;
+  const head = `<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:600">⛏ Pool Mining (Aria) <span style="font-weight:400;font-size:11px;color:var(--text-dim)">— reported by pool.ariabrain.com, off-chain data</span></div>
+      ${toggle}</div>`;
+
+  if (!P.enabled) {
+    body.innerHTML = head + `<div style="font-size:12px;color:var(--text-dim)">Aria pool integration is <strong>off</strong> — no network request is made. Enable it to fetch your pool vesting data: <strong>only your mining address</strong> is sent to pool.ariabrain.com. If you mine solo or on another pool, leave it off — your on-chain figures above are unaffected either way.</div>`;
+    poolAriaRenderVesting();
+    return;
+  }
+  if (!poolAriaSupported()) {
+    body.innerHTML = head + `<div style="font-size:12px;color:var(--text-dim)">Pool integration requires the all-in-one PBC app (secure backend fetch). On-chain figures above are unaffected.</div>`;
+    poolAriaRenderVesting();
+    return;
+  }
+  if (P.loading && !P.agg) {
+    body.innerHTML = head + `<div style="font-size:12px;color:var(--text-dim)">⏳ Fetching your Aria pool data…</div>`;
+    poolAriaRenderVesting();
+    return;
+  }
+  if (P.error) {
+    body.innerHTML = head + `<div style="font-size:12px;color:var(--orange,#f0a050)">⚠ Aria pool data unavailable (${P.error}) — on-chain figures are unaffected.${P.lastOk ? ' Last successful update: ' + _poolAriaAge() + '.' : ''}</div>`;
+    poolAriaRenderVesting();
+    return;
+  }
+  if (P.noData) {
+    body.innerHTML = head + `<div style="font-size:12px;color:var(--text-dim)">No Aria pool data for this wallet — normal if you mine solo or on another pool. All figures on this page remain on-chain only.</div>`;
+    poolAriaRenderVesting();
+    return;
+  }
+  if (P.agg) {
+    const age = _poolAriaAge();
+    const stale = P.lastOk && (Date.now() - P.lastOk > 3600000);
+    const m = poolAriaMerged();
+    let figures;
+    if (m) {
+      // Full split available (summary cross-checked) — exact paid/available
+      figures = `
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+        <div><div style="font-size:11px;color:var(--text-dim)">Total credited by pool</div><div style="font-family:var(--mono);font-size:17px;color:var(--gold)">${fmt(m.credited)}</div></div>
+        <div><div style="font-size:11px;color:var(--text-dim)">Locked (vesting)</div><div style="font-family:var(--mono);font-size:17px;color:var(--blue)">${fmt(m.locked)}</div></div>
+        <div><div style="font-size:11px;color:var(--text-dim)">Paid to your wallet</div><div style="font-family:var(--mono);font-size:17px;color:var(--green)">${fmt(m.paid)}</div></div>
+        <div><div style="font-size:11px;color:var(--text-dim)">Available (payable)</div><div style="font-family:var(--mono);font-size:17px;color:var(--green)">${fmt(m.available)}</div></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:8px">Pool-reported figures, cross-checked to the cent · merged into Patrimony / Vesting / Total Mined / Total Income with per-card breakdowns · updated ${age || '—'}${stale ? ' · <span style="color:var(--orange,#f0a050)">data may be stale</span>' : ''} · forecast in the Vesting tab</div>`;
+    } else {
+      const recon = (typeof window._otherReceivedLifetime === 'number')
+        ? `<div style="font-size:11px;color:var(--text-dim);margin-top:8px">Already paid out to your wallet on-chain (in « Other received »): ${fmt(window._otherReceivedLifetime)} PBC</div>` : '';
+      figures = `
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px">
+        <div><div style="font-size:11px;color:var(--text-dim)">Total credited by pool</div><div style="font-family:var(--mono);font-size:17px;color:var(--gold)">${fmt(P.agg.totalCredited)}</div></div>
+        <div><div style="font-size:11px;color:var(--text-dim)">Unlocked (paid or payable)</div><div style="font-family:var(--mono);font-size:17px;color:var(--green)">${fmt(P.agg.unlockedTotal)}</div></div>
+        <div><div style="font-size:11px;color:var(--text-dim)">Locked (vesting)</div><div style="font-family:var(--mono);font-size:17px;color:var(--blue)">${fmt(P.agg.lockedTotal)}</div></div>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:8px">Pool-reported credits — <strong>not yet in your wallet</strong> until the pool pays out · updated ${age || '—'}${stale ? ' · <span style="color:var(--orange,#f0a050)">data may be stale</span>' : ''} · see the Vesting tab for the unlock forecast</div>
+      ${recon}`;
+    }
+    const warn = P.summaryWarn
+      ? `<div style="font-size:11px;color:var(--orange,#f0a050);margin-top:6px">⚠ ${P.summaryWarn}</div>` : '';
+    body.innerHTML = head + figures + warn;
+    poolAriaRenderVesting();
+    return;
+  }
+  body.innerHTML = head + `<div style="font-size:12px;color:var(--text-dim)">⏳ Fetching your Aria pool data…</div>`;
+  poolAriaRenderVesting();
+}
+
+// Vesting tab section — per-tier pool forecast (dossier §6.2)
+async function poolAriaRenderVesting() {
+  const panel = document.getElementById('poolAriaVestPanel');
+  const body = document.getElementById('poolAriaVestBody');
+  if (!panel || !body) return;
+  const P = _poolAria;
+  const show = P.enabled && poolAriaSupported() && (P.agg || P.loading || P.noData || P.error);
+  panel.style.display = show ? '' : 'none';
+  if (!show) return;
+  if (P.loading && !P.agg) { body.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--text-dim)">⏳ Fetching pool data…</div>'; return; }
+  if (P.error) { body.innerHTML = `<div style="padding:14px;font-size:12px;color:var(--orange,#f0a050)">⚠ Pool data unavailable (${P.error})</div>`; return; }
+  if (P.noData) { body.innerHTML = '<div style="padding:14px;font-size:12px;color:var(--text-dim)">No Aria pool data for this wallet — normal if you mine solo or on another pool.</div>'; return; }
+  if (!P.agg) { body.innerHTML = ''; return; }
+
+  // Dates: measured block time, same convention as the on-chain forecast
+  let height = 0, spb = 60;
+  try {
+    const h = await rpc('get_height');
+    height = h.height || 0;
+    spb = await effectiveSecPerBlock(height);
+  } catch(e) {}
+  const nowTs = Math.floor(Date.now() / 1000);
+  const dateFmt = { day: '2-digit', month: 'short', year: 'numeric', timeZone: 'UTC' };
+  const hToDate = h => new Date((nowTs + (h - height) * spb) * 1000).toLocaleDateString('fr-FR', dateFmt);
+  const TIER_LBL = [null, '24h (1,440 blk)', '30d (43,200 blk)', '60d (86,400 blk)', '90d (129,600 blk)'];
+
+  let rows = '';
+  let totFirst = Infinity, totLast = 0;
+  for (let k = 1; k <= 4; k++) {
+    const tp = P.agg.tiers[k];
+    if (tp.locked > 0) {
+      if (tp.firstH < totFirst) totFirst = tp.firstH;
+      if (tp.lastH > totLast) totLast = tp.lastH;
+    }
+    const dateCell = tp.locked <= 0 ? '—'
+      : (tp.firstH === tp.lastH ? hToDate(tp.firstH) : hToDate(tp.firstH) + ' → ' + hToDate(tp.lastH));
+    rows += `<tr>
+      <td class="text" style="color:var(--gold)">Tier ${k}</td>
+      <td class="right">${TIER_LBL[k]}</td>
+      <td class="right">${dateCell}</td>
+      <td class="right" style="color:var(--green)">${tp.locked > 0 ? fmt(tp.locked) : '0'}</td></tr>`;
+  }
+  const totDateCell = totFirst === Infinity ? '—'
+    : (totFirst === totLast ? hToDate(totFirst) : hToDate(totFirst) + ' → ' + hToDate(totLast));
+  rows += `<tr style="border-top:1px solid var(--border)">
+    <td class="text" style="color:var(--gold);font-weight:600">Total</td>
+    <td class="right"></td><td class="right">${totDateCell}</td>
+    <td class="right" style="color:var(--green);font-weight:600">${fmt(P.agg.lockedTotal)}</td></tr>`;
+  body.innerHTML = `<table class="tbl"><thead><tr>
+      <th class="text">Tier</th><th class="right">Period</th><th class="right">Est. Unlock Date</th><th class="right">Amount Locked</th>
+    </tr></thead><tbody>${rows}</tbody></table>
+    <div style="padding:8px 12px;font-size:11px;color:var(--text-dim)">Your pool credits follow the same 4-tier vesting as solo mining (24h / 30d / 60d / 90d). Dates use the measured block time (~${spb.toFixed(0)}s/blk). Pool-reported data — not enforceable on-chain until the pool pays out. Updated ${_poolAriaAge() || '—'}.</div>`;
+}
+
+// Called from loadDashboard: refresh the CSV when new funds arrive (Stef) —
+// debounced inside poolAriaFetch (2 min).
+function poolAriaOnBalance(newBalance) {
+  if (!_poolAria.enabled) { _poolAria.lastBalance = newBalance; return; }
+  if (_poolAria.lastBalance !== null && newBalance > _poolAria.lastBalance) poolAriaFetch('balance');
+  _poolAria.lastBalance = newBalance;
+}
+
+
 (async function init() {
   // ── First-run wallet setup gate (PBC neuron pack): if wallet-rpc has no
   // wallet loaded, show the setup overlay and stop here.
@@ -5476,6 +6063,12 @@ async function updateNodePeers() {
   // Node peer indicator next to the brand (refresh every 15 s)
   updateNodePeers();
   setInterval(updateNodePeers, 15000);
+
+  // Pool Aria integration: initial render (toggle state) + fetch if enabled +
+  // 30-min refresh cycle (poolAriaFetch returns immediately when disabled).
+  poolAriaRender();
+  if (_poolAria.enabled) poolAriaFetch('init');
+  setInterval(() => poolAriaFetch('timer'), 30 * 60 * 1000);
 
   // Warn if a long wallet-side operation was interrupted by a previous page
   // reload (PBC 29/08) — delayed so it never blocks first render.

@@ -7,12 +7,59 @@
 //   - arrêt : taskkill /T /F (Windows) / SIGTERM (POSIX)
 //   - données : app.getPath('userData') (%APPDATA%\PBC ou ~/.config/PBC)
 
-const { app, BrowserWindow, Tray, Menu, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain } = require('electron');
 const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
+const https = require('https');
 const net = require('net');
+
+// ── Pool Aria (opt-in) : fetch du CSV vesting côté backend (le renderer est
+// bloqué par CORS — vérifié live 03/09). Base URL surchargeable pour les tests.
+const POOL_API_BASE = process.env.PBC_POOL_API_BASE || 'https://pool.ariabrain.com/pbc-api/vesting.csv';
+const POOL_API_SUMMARY = (process.env.PBC_POOL_API_SUMMARY || POOL_API_BASE.replace(/vesting\.csv$/, 'vesting_summary'));
+
+function _poolHttpGet(url) {
+  return new Promise((resolve) => {
+    const req = https.get(url, { timeout: 15000, headers: { 'User-Agent': 'PBC-wallet/1.0' } }, (res) => {
+      if (res.statusCode === 404) { res.resume(); return resolve({ ok: true, status: 404, body: '' }); }
+      if (res.statusCode !== 200) { res.resume(); return resolve({ ok: false, error: 'HTTP ' + res.statusCode }); }
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => {
+        body += c;
+        if (body.length > 5 * 1024 * 1024) { req.destroy(); resolve({ ok: false, error: 'response too large' }); }
+      });
+      res.on('end', () => resolve({ ok: true, status: 200, body }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout (15s)' }); });
+    req.on('error', (e) => resolve({ ok: false, error: e.message || 'network error' }));
+  });
+}
+
+ipcMain.handle('pool:fetch-vesting', async (_evt, address) => {
+  try {
+    // PBC addresses start with "Pbc" OR "Pbd" (base58 prefixes) — the first
+    // version required ^Pbc and wrongly rejected Pbd… addresses (Stef's).
+    if (typeof address !== 'string' || !/^Pb[1-9A-HJ-NP-Za-km-z]{90,110}$/.test(address))
+      return { ok: false, error: 'invalid address' };
+    const q = '?address=' + encodeURIComponent(address);
+    // CSV (per-tier schedule) + JSON summary (paid/available split — Aria added
+    // it 03/09 on our request). Summary failure degrades gracefully (CSV-only mode).
+    const csvR = await _poolHttpGet(POOL_API_BASE + q);
+    if (!csvR.ok || csvR.status !== 200) return csvR;
+    let summary = null, summaryError = null;
+    try {
+      const sR = await _poolHttpGet(POOL_API_SUMMARY + q);
+      if (sR.ok && sR.status === 200 && sR.body) summary = JSON.parse(sR.body);
+      else summaryError = (sR && sR.error) || 'summary unavailable';
+    } catch (e) { summaryError = e.message || 'summary parse error'; }
+    return { ok: true, status: 200, body: csvR.body, summary, summaryError };
+  } catch (e) {
+    return { ok: false, error: e.message || 'fetch error' };
+  }
+});
 
 const isWin = process.platform === 'win32';
 const EXE = isWin ? '.exe' : '';
@@ -152,7 +199,11 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#0b1020',
     icon: resolveIcon() || undefined,
-    webPreferences: { nodeIntegration: false, contextIsolation: true }
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    }
   });
   win.loadURL(`http://127.0.0.1:${WEBUI_PORT}`);
   log('[pbc] window opened on', `http://127.0.0.1:${WEBUI_PORT}`);
