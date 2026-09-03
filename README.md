@@ -3,9 +3,21 @@
 **Private money that works for you.** Privacy Bank Chain is a Proof-of-Work blockchain that combines Monero-grade privacy with native, consensus-enforced banking primitives — no smart contracts, no trusted third parties, no company behind it.
 
 🌐 **Website & downloads: [privbank.finance](https://privbank.finance)**
-⏰ **The website goes live on 2026-08-31 at 20:00 UTC** — from that moment it will host the full source code, pre-built node packages, GUI wallets (Windows/Linux), the CPU miner, the technical whitepaper and the launch guides.
+🟢 **Mainnet is LIVE since 2026-08-31** — the chain is running, mining is open to everyone (CPU, RandomX V2).
 
 💬 **Community: [Discord](https://discord.gg/UgkdkYXdJQ)**
+
+## What's in this repository
+
+This repository hosts the **source code only** (no binaries):
+
+- **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.2.14)
+- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.0.10, Windows/Linux)
+- **`BUILD.md`** — build & setup guide (node, wallets, web UI)
+
+The miner source is distributed separately and is not part of this repository.
+
+📦 **Pre-compiled binaries** (node packages for Zen1/Zen3/Zen5 CPUs, GUI wallets for Windows & Linux, static builds) and **step-by-step quick-start guides** are available on the project website: **[privbank.finance](https://privbank.finance)** — the same source code is also downloadable there as a versioned, md5-verified archive.
 
 ## Partnership with PulseMining
 
@@ -13,10 +25,10 @@ Privacy Bank Chain is developed **in partnership with [PulseMining](https://disc
 
 Join the PBC project channels on the PulseMining Discord:
 
-- 🇫🇷 [Français](https://discord.com/channels/1516526810458755263/1517540676089413732)
-- 🇬🇧 [English](https://discord.com/channels/1516526810458755263/1517540694775038084)
-- 🇷🇺 [Русский](https://discord.com/channels/1516526810458755263/1517540736751505560)
-- 🇪🇸 [Español](https://discord.com/channels/1516526810458755263/1517540713976561765)
+- [Français](https://discord.com/channels/1516526810458755263/1517540676089413732)
+- [English](https://discord.com/channels/1516526810458755263/1517540694775038084)
+- [Русский](https://discord.com/channels/1516526810458755263/1517540736751505560)
+- [Español](https://discord.com/channels/1516526810458755263/1517540713976561765)
 
 ---
 
@@ -24,7 +36,7 @@ Join the PBC project channels on the PulseMining Discord:
 
 PBC is a Monero-class privacy chain (ring signatures, stealth addresses, RingCT hidden amounts) extended **at the consensus level** with a complete private-banking layer. Everything below is enforced by every node, in deterministic integer arithmetic — no floating point, no platform-dependent rounding.
 
-### 🔐 Native privacy + ⚛️ post-quantum by design
+### 🔐 Native privacy + ⚛️ hybrid post-quantum by design
 CryptoNote privacy (RingCT, ring signatures, stealth addresses) combined with a hybrid post-quantum layer: **ML-DSA-65 (Dilithium) signatures and ML-KEM-768 (Kyber) encapsulation** via liboqs. From hard fork v23, a Dilithium co-signature is **mandatory** to authorize any public spend-authority operation (deposit withdrawals, market payouts) — breaking Ed25519 alone is no longer enough.
 
 ### 🏦 Term deposits with real yield
@@ -52,13 +64,13 @@ A **Locked Supply Multiplier** dampens reward inflows when more than 60% of circ
 
 ## Getting started
 
-1. Download the all-in-one GUI wallet (Windows / Linux) or a node package from [privbank.finance](https://privbank.finance).
-2. Follow the quick-start guide on the website — 10 minutes from download to mining.
-3. Optional: build from source (Ubuntu 24, instructions on the website).
+1. **Easy way:** download the all-in-one GUI wallet (Windows / Linux) or a node package from [privbank.finance](https://privbank.finance) and follow the quick-start guide there — 10 minutes from download to mining.
+2. **Build from source:** see **[BUILD.md](BUILD.md)** (Ubuntu 24 / Debian 12 — node, CLI wallet, wallet-RPC, web UI, GUI app).
+3. The full source code is also published as a versioned, md5-verified archive on [privbank.finance](https://privbank.finance), alongside the compiled binaries.
 
 ## License
 
-Privacy Bank Chain is open source. See the source package on [privbank.finance](https://privbank.finance) for details.
+Privacy Bank Chain is open source. See the `LICENSE` file in `pbc-chain/` for details.
 
 ---
 

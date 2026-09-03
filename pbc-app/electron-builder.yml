@@ -1,0 +1,32 @@
+appId: finance.privbank.pbc
+productName: PBC
+copyright: Copyright © 2026 PBC Chain
+directories:
+  output: dist
+files:
+  - src/**/*
+  - build/**/*
+  - package.json
+extraResources:
+  - from: resources/bin
+    to: bin
+  - from: resources/web
+    to: web
+win:
+  target: portable
+  icon: build/icon.png
+portable:
+  artifactName: PBC-${version}-win64-portable.${ext}
+linux:
+  target:
+    - deb
+    - AppImage
+  category: Network
+  icon: build/icon.png
+  artifactName: PBC-${version}-linux-x86_64.${ext}
+  maintainer: PBC Chain <contact@privbank.finance>
+  synopsis: PBC — Privacy Bank Chain all-in-one wallet
+  description: "PBC all-in-one wallet : node (pbcd) + wallet-rpc + web interface, bundled in a single desktop application."
+
+deb:
+  afterInstall: scripts/after-install.sh

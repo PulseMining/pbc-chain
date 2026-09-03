@@ -1,0 +1,21 @@
+{
+  "name": "pbc-wallet",
+  "productName": "PBC",
+  "version": "1.0.10",
+  "description": "PBC — Privacy Bank Chain : portefeuille tout-en-un (noeud + wallet-rpc + interface web)",
+  "main": "src/main.js",
+  "author": "PBC Chain",
+  "homepage": "https://privbank.finance",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8"
+  }
+}
