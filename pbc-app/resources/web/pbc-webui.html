@@ -2219,10 +2219,9 @@ async function loadDashboard() {
       `${fmtPct(pDepLock)} locked` +
       (dep_claimed > 0 ? ` · ${fmtShort(dep_claimed)} earned` : '');
 
-    // Stash pure on-chain base values, then apply the Aria pool merge (no-op when
-    // pool data is absent or inconsistent — cards keep their on-chain values).
-    window._dashBase = { patrimony, vesting_locked, totalMined, totalInterestPaid, otherReceived, dep_claimable };
-    poolAriaApplyMerged();
+    // Stash pure on-chain base values (used by the pool merge applied AFTER the
+    // on-chain donut below — so the merged donut is the final state).
+    window._dashBase = { patrimony, vesting_locked, totalMined, totalInterestPaid, otherReceived, dep_claimable, liquid, dep_locked, withdrawPending };
 
     // Allocation donut
     const pWithdrawPending = patrimony > 0 ? withdrawPending / patrimony : 0;
@@ -2237,6 +2236,11 @@ async function loadDashboard() {
     if (withdrawPending > 0)
       donutSegments.push({ label: 'Withdrawn interest (in wallet)', pct: pWithdrawPending * 100, amount: withdrawPending, color: 'var(--text-muted)' });
     drawDonut(donutSegments);
+
+    // Pool merge LAST (cards + donut): when Aria data is consistent, this rewrites
+    // the merged cards and redraws the merged donut (solo/pool split). No-op
+    // otherwise — the on-chain values above are the final state.
+    poolAriaApplyMerged();
 
     // Mining stats — PBC 29/08: coinbase ONLY (type='block'). The old fee==0
     // test counted interest withdraw payouts as mining (Stef's 759.20 PBC of
@@ -5774,6 +5778,24 @@ function poolAriaApplyMerged() {
   if (nonPool < -0.01 * COIN)
     tiSub += `<br><span style="color:var(--orange,#f0a050)">⚠ reconciliation: pool-reported paid (${fmtShort(m.paid)}) exceeds on-chain non-coinbase received (${fmtShort(b.otherReceived)}) — payouts may be in flight or attributed differently</span>`;
   document.getElementById('d-total-income-sub').innerHTML = tiSub;
+
+  // Allocation donut — merged view (Stef 03/09): the donut must match the merged
+  // Total Patrimony card. Vesting is split solo vs Aria pool; the Aria available
+  // part (payable now) gets its own segment when > 0 so the center total always
+  // equals the card exactly. Percentages are against the MERGED patrimony.
+  const donutM = [
+    { label: 'Liquid', pct: (pat2 > 0 ? b.liquid / pat2 : 0) * 100, amount: b.liquid, color: 'var(--green)' },
+    { label: 'Vesting (solo)', pct: (pat2 > 0 ? b.vesting_locked / pat2 : 0) * 100, amount: b.vesting_locked, color: 'var(--blue)' },
+    { label: 'Vesting (Aria pool)', pct: (pat2 > 0 ? m.locked / pat2 : 0) * 100, amount: m.locked, color: '#a78bfa' },
+  ];
+  if (m.available > 0)
+    donutM.push({ label: 'Aria available (payable)', pct: (pat2 > 0 ? m.available / pat2 : 0) * 100, amount: m.available, color: '#22d3ee' });
+  donutM.push({ label: 'Deposits (locked)', pct: (pat2 > 0 ? b.dep_locked / pat2 : 0) * 100, amount: b.dep_locked, color: 'var(--gold)' });
+  if (b.dep_claimable > 0)
+    donutM.push({ label: 'Interest claimable', pct: (pat2 > 0 ? b.dep_claimable / pat2 : 0) * 100, amount: b.dep_claimable, color: 'var(--orange,#f0a050)' });
+  if (b.withdrawPending > 0)
+    donutM.push({ label: 'Withdrawn interest (in wallet)', pct: (pat2 > 0 ? b.withdrawPending / pat2 : 0) * 100, amount: b.withdrawPending, color: 'var(--text-muted)' });
+  drawDonut(donutM);
 }
 
 
