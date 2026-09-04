@@ -64,8 +64,8 @@ A **Locked Supply Multiplier** dampens reward inflows when more than 60% of circ
 
 ## Getting started
 
-1. **Easy way:** download the all-in-one GUI wallet (Windows / Linux) or a node package from [privbank.finance](https://privbank.finance) and follow the quick-start guide there — 10 minutes from download to mining.
-2. **Build from source:** see **[BUILD.md](BUILD.md)** (Ubuntu 24 / Debian 12 — node, CLI wallet, wallet-RPC, web UI, GUI app).
+1. **Easy way:** download the all-in-one GUI wallet (Windows / Linux) or a node package from [privbank.finance](https://privbank.finance) and follow the quick-start guide there — 10 minutes from download to mining. The full startup sequence (node → wallet → wallet-RPC → web UI → browser) is in `pbc-chain/README.md` and in the [build & setup guide](https://privbank.finance/en/GUIDE_COMPILATION_MISE_EN_ROUTE_PBC.html).
+2. **Build from source:** see **[BUILD.md](BUILD.md)** (Ubuntu 24 / Debian 12) — **liboqs MUST be built first**, then the node, CLI wallet, wallet-RPC and web UI.
 3. The full source code is also published as a versioned, md5-verified archive on [privbank.finance](https://privbank.finance), alongside the compiled binaries.
 
 ## License
