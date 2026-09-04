@@ -1981,7 +1981,9 @@ async function loadDashboard() {
     // here). Subtract the already-computed lifetime interest total instead.
     otherReceived = Math.max(0, otherReceived - totalInterestPaid);
     // Total lifetime income = everything earned (mining + interest + other received).
-    const totalIncome = totalMined + totalInterestPaid + otherReceived;
+    // PBC OPTION B (04/09, Stef): accrued deposit interest (claimable + accumulated)
+    // is counted in income too → invariant « patrimony == income − fees » at ALL times.
+    const totalIncome = totalMined + totalInterestPaid + otherReceived + dep_claimable + dep_claimed;
 
     // PBC FIX (03/09): deposit principal is NOT in wallet balance — deposits consume
     // the UTXOs into the protocol reserve (proven on-chain: balance == inflows − deposits
@@ -1990,29 +1992,29 @@ async function loadDashboard() {
     // (those are already shown by the ⏳ maturing hourglass, keep vesting = mining tiers).
     const vesting_locked = Math.max(0, balance - unlocked - maturingInterest);
     // True patrimony = wallet outputs + deposit principal (locked at protocol) + accrued
-    // claimable interest (recorded on-chain). Decision: include claimable — hiding it
-    // would reproduce exactly the confusion this fix addresses.
-    const patrimony = balance + dep_locked + dep_claimable;
+    // interest (claimable + accumulated_reward, both recorded on-chain and owed by the
+    // protocol). OPTION B (04/09, Stef): include BOTH so patrimony == income − fees.
+    const patrimony = balance + dep_locked + dep_claimable + dep_claimed;
 
     document.getElementById('d-patrimony').textContent = fmtShort(patrimony);
     document.getElementById('d-patrimony-sub').innerHTML =
       `PBC — incl. ${fmtShort(dep_locked)} deposits` +
-      (dep_claimable > 0 ? ` · ${fmtShort(dep_claimable)} claimable` : '');
+      (dep_claimable + dep_claimed > 0 ? ` · ${fmtShort(dep_claimable + dep_claimed)} accrued interest` : '');
     document.getElementById('d-total-mined').textContent = fmtShort(totalMined);
     document.getElementById('d-total-income').textContent = fmtShort(totalIncome);
     document.getElementById('d-total-income-sub').textContent =
       `mining ${fmtShort(totalMined)} + interest ${fmtShort(totalInterestPaid)}` +
       (otherReceived > 0 ? ` · +${fmtShort(otherReceived)} other received (pool/transfers)` : '') +
-      (dep_claimable > 0 ? ` · ${fmtShort(dep_claimable)} claimable not yet included` : '');
+      (dep_claimable + dep_claimed > 0 ? ` · incl. ${fmtShort(dep_claimable + dep_claimed)} accrued (claimable)` : '');
     document.getElementById('d-available').textContent = fmtShort(liquid);
     document.getElementById('d-vesting').textContent = fmtShort(vesting_locked);
     document.getElementById('d-deposits').textContent = fmtShort(dep_locked);
     document.getElementById('d-interest-claimable').textContent = fmtShort(dep_claimable);
     document.getElementById('d-interest-claimable-sub').textContent =
-      dep_claimable > 0 ? 'ready to claim · included in Total Patrimony' : 'no rewards yet';
+      dep_claimable > 0 ? 'ready to claim · included in Total Patrimony & Total Income' : 'no rewards yet';
     document.getElementById('d-interest-ready').textContent = fmtShort(dep_claimed);
     document.getElementById('d-interest-ready-sub').textContent =
-      dep_claimed > 0 ? 'not yet in wallet — will land in Liquid + Total Income once withdrawn' : 'no interest ready to withdraw yet';
+      dep_claimed > 0 ? 'included in Total Patrimony & Total Income · lands in Liquid once withdrawn' : 'no interest ready to withdraw yet';
     document.getElementById('d-interest-paid').textContent = fmtShort(totalInterestPaid);
     {
       // PBC FIX-1: withdrawn interest is now real, spendable liquidity once it matures
@@ -2047,14 +2049,14 @@ async function loadDashboard() {
 
     // Allocation donut
     const pWithdrawPending = patrimony > 0 ? withdrawPending / patrimony : 0;
-    const pClaimable = patrimony > 0 ? dep_claimable / patrimony : 0;
+    const pClaimable = patrimony > 0 ? (dep_claimable + dep_claimed) / patrimony : 0;
     const donutSegments = [
       { label: 'Liquid', pct: pLiquid * 100, amount: liquid, color: 'var(--green)' },
       { label: 'Vesting', pct: pVest * 100, amount: vesting_locked, color: 'var(--blue)' },
       { label: 'Deposits (locked)', pct: pDepLock * 100, amount: dep_locked, color: 'var(--gold)' },
     ];
-    if (dep_claimable > 0)
-      donutSegments.push({ label: 'Interest claimable', pct: pClaimable * 100, amount: dep_claimable, color: 'var(--orange,#f0a050)' });
+    if (dep_claimable + dep_claimed > 0)
+      donutSegments.push({ label: 'Interest claimable', pct: pClaimable * 100, amount: dep_claimable + dep_claimed, color: 'var(--orange,#f0a050)' });
     if (withdrawPending > 0)
       donutSegments.push({ label: 'Withdrawn interest (in wallet)', pct: pWithdrawPending * 100, amount: withdrawPending, color: 'var(--text-muted)' });
     drawDonut(donutSegments);
@@ -4746,9 +4748,10 @@ async function loadIncome() {
     });
 
     // PBC FIX (wallet-scope, Option A): deposit rewards = ONLY this wallet's deposits.
-    // get_deposits_accrued is wallet-scoped. PBC FIX (03/09): accrued rewards are
-    // UNREALIZED (still locked at protocol) → shown on their OWN card, EXCLUDED from
-    // Total Income (dashboard convention: claimable lands in income once withdrawn).
+    // get_deposits_accrued is wallet-scoped. PBC OPTION B (04/09, Stef): accrued rewards
+    // (claimable + accumulated) are INCLUDED in Total Income on the « all » view (they
+    // are owed by the protocol, same convention as the dashboard). On PERIOD views they
+    // are EXCLUDED (current state, not boundable to the period) and noted instead.
     let accruedRewards = 0;
     try {
       const deps = await rpc('get_deposits_accrued', { filter: 'all', include_spent: false });
@@ -4766,6 +4769,7 @@ async function loadIncome() {
     const avgRewards = totalRewards / Math.max(dayKeys.length, 1);
     const avgOther = totalOther / Math.max(dayKeys.length, 1);
     const periodLabel = val === 'all' ? 'all time' : numDays + 'd';
+    const inclAccrued = val === 'all' ? accruedRewards : 0;   // OPTION B (04/09)
 
     document.getElementById('incomeCards').innerHTML = `
       <div class="card">
@@ -4785,13 +4789,16 @@ async function loadIncome() {
       </div>
       <div class="card">
         <div class="card-label">Total Income (${periodLabel})</div>
-        <div class="card-value" style="font-size:18px">${fmt(totalMined + totalRewards + totalOther)}</div>
-        <div class="card-sub">mining ${fmtShort(totalMined)} + interest ${fmtShort(totalRewards)} + other ${fmtShort(totalOther)}</div>
+        <div class="card-value" style="font-size:18px">${fmt(totalMined + totalRewards + totalOther + inclAccrued)}</div>
+        <div class="card-sub">${`mining ${fmtShort(totalMined)} + interest ${fmtShort(totalRewards)} + other ${fmtShort(totalOther)}` +
+          (val === 'all'
+            ? (accruedRewards > 0 ? ` · incl. ${fmtShort(accruedRewards)} accrued` : '')
+            : (accruedRewards > 0 ? ` · accrued (${fmtShort(accruedRewards)}) shown in « all » view` : ''))}</div>
       </div>
       <div class="card">
         <div class="card-label">Deposit Rewards Accrued</div>
         <div class="card-value" style="font-size:18px;color:var(--blue)">${fmt(accruedRewards)}</div>
-        <div class="card-sub">not yet realized — lands in income once withdrawn/claimed</div>
+        <div class="card-sub">${val === 'all' ? 'included in Total Income above (all-time view)' : 'current state — included in Total Income on the « all » view'}</div>
       </div>
       <div class="card">
         <div class="card-label">Projected / Year</div>

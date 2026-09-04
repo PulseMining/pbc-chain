@@ -837,7 +837,7 @@ html, body {
           </div>
         </div>
         <!-- Right: Daily Revenue chart -->
-        <div>
+        <div style="position:relative">
           <div style="font-size:13px;font-weight:600;margin-bottom:12px;color:var(--text)">Daily Revenue (last 7d)</div>
           <canvas id="dashDailyChart" height="200"></canvas>
           <div id="dashDailyLegend" style="display:flex;gap:14px;margin-top:8px;font-size:11px;color:var(--muted)"></div>
@@ -2155,7 +2155,9 @@ async function loadDashboard() {
     poolAriaOnBalance(balance);                      // pool CSV refresh on new funds (Stef)
     if (_poolAria.agg) poolAriaRender();             // re-render once otherReceived is known (init race)
     // Total lifetime income = everything earned (mining + interest + other received).
-    const totalIncome = totalMined + totalInterestPaid + otherReceived;
+    // PBC OPTION B (04/09, Stef): accrued deposit interest (claimable + accumulated)
+    // is counted in income too → invariant « patrimony == income − fees » at ALL times.
+    const totalIncome = totalMined + totalInterestPaid + otherReceived + dep_claimable + dep_claimed;
 
     // PBC FIX (03/09): deposit principal is NOT in wallet balance — deposits consume
     // the UTXOs into the protocol reserve (proven on-chain: balance == inflows − deposits
@@ -2164,29 +2166,29 @@ async function loadDashboard() {
     // (those are already shown by the ⏳ maturing hourglass, keep vesting = mining tiers).
     const vesting_locked = Math.max(0, balance - unlocked - maturingInterest);
     // True patrimony = wallet outputs + deposit principal (locked at protocol) + accrued
-    // claimable interest (recorded on-chain). Decision: include claimable — hiding it
-    // would reproduce exactly the confusion this fix addresses.
-    const patrimony = balance + dep_locked + dep_claimable;
+    // interest (claimable + accumulated_reward, both recorded on-chain and owed by the
+    // protocol). OPTION B (04/09, Stef): include BOTH so patrimony == income − fees.
+    const patrimony = balance + dep_locked + dep_claimable + dep_claimed;
 
     document.getElementById('d-patrimony').textContent = fmtShort(patrimony);
     document.getElementById('d-patrimony-sub').innerHTML =
       `PBC — incl. ${fmtShort(dep_locked)} deposits` +
-      (dep_claimable > 0 ? ` · ${fmtShort(dep_claimable)} claimable` : '');
+      (dep_claimable + dep_claimed > 0 ? ` · ${fmtShort(dep_claimable + dep_claimed)} accrued interest` : '');
     document.getElementById('d-total-mined').textContent = fmtShort(totalMined);
     document.getElementById('d-total-income').textContent = fmtShort(totalIncome);
     document.getElementById('d-total-income-sub').textContent =
       `mining ${fmtShort(totalMined)} + interest ${fmtShort(totalInterestPaid)}` +
       (otherReceived > 0 ? ` · +${fmtShort(otherReceived)} other received (pool/transfers)` : '') +
-      (dep_claimable > 0 ? ` · ${fmtShort(dep_claimable)} claimable not yet included` : '');
+      (dep_claimable + dep_claimed > 0 ? ` · incl. ${fmtShort(dep_claimable + dep_claimed)} accrued (claimable)` : '');
     document.getElementById('d-available').textContent = fmtShort(liquid);
     document.getElementById('d-vesting').textContent = fmtShort(vesting_locked);
     document.getElementById('d-deposits').textContent = fmtShort(dep_locked);
     document.getElementById('d-interest-claimable').textContent = fmtShort(dep_claimable);
     document.getElementById('d-interest-claimable-sub').textContent =
-      dep_claimable > 0 ? 'ready to claim · included in Total Patrimony' : 'no rewards yet';
+      dep_claimable > 0 ? 'ready to claim · included in Total Patrimony & Total Income' : 'no rewards yet';
     document.getElementById('d-interest-ready').textContent = fmtShort(dep_claimed);
     document.getElementById('d-interest-ready-sub').textContent =
-      dep_claimed > 0 ? 'not yet in wallet — will land in Liquid + Total Income once withdrawn' : 'no interest ready to withdraw yet';
+      dep_claimed > 0 ? 'included in Total Patrimony & Total Income · lands in Liquid once withdrawn' : 'no interest ready to withdraw yet';
     document.getElementById('d-interest-paid').textContent = fmtShort(totalInterestPaid);
     {
       // PBC FIX-1: withdrawn interest is now real, spendable liquidity once it matures
@@ -2221,18 +2223,18 @@ async function loadDashboard() {
 
     // Stash pure on-chain base values (used by the pool merge applied AFTER the
     // on-chain donut below — so the merged donut is the final state).
-    window._dashBase = { patrimony, vesting_locked, totalMined, totalInterestPaid, otherReceived, dep_claimable, liquid, dep_locked, withdrawPending };
+    window._dashBase = { patrimony, vesting_locked, totalMined, totalInterestPaid, otherReceived, dep_claimable, dep_claimed, liquid, dep_locked, withdrawPending };
 
     // Allocation donut
     const pWithdrawPending = patrimony > 0 ? withdrawPending / patrimony : 0;
-    const pClaimable = patrimony > 0 ? dep_claimable / patrimony : 0;
+    const pClaimable = patrimony > 0 ? (dep_claimable + dep_claimed) / patrimony : 0;
     const donutSegments = [
       { label: 'Liquid', pct: pLiquid * 100, amount: liquid, color: 'var(--green)' },
       { label: 'Vesting', pct: pVest * 100, amount: vesting_locked, color: 'var(--blue)' },
       { label: 'Deposits (locked)', pct: pDepLock * 100, amount: dep_locked, color: 'var(--gold)' },
     ];
-    if (dep_claimable > 0)
-      donutSegments.push({ label: 'Interest claimable', pct: pClaimable * 100, amount: dep_claimable, color: 'var(--orange,#f0a050)' });
+    if (dep_claimable + dep_claimed > 0)
+      donutSegments.push({ label: 'Interest claimable', pct: pClaimable * 100, amount: dep_claimable + dep_claimed, color: 'var(--orange,#f0a050)' });
     if (withdrawPending > 0)
       donutSegments.push({ label: 'Withdrawn interest (in wallet)', pct: pWithdrawPending * 100, amount: withdrawPending, color: 'var(--text-muted)' });
     drawDonut(donutSegments);
@@ -2405,6 +2407,49 @@ function drawDashDaily(dayKeys, agg) {
   if (maxVal === 0) maxVal = 1;
   const COIN = 1e12;
   const colors = { mined: '#d4a843', rewards: '#4ade80', claims: '#38bdf8', withdrawn: '#a78bfa' };
+  // PBC 03/09: hover tooltip — canvas charts have no native <title>, so we track
+  // the pointer and show the per-series values of the day under the cursor.
+  canvas._dashDaily = { dayKeys, agg, pad, plotW, barW, gap, colors };
+  if (!canvas._hoverBound) {
+    canvas._hoverBound = true;
+    const parent = canvas.parentElement;
+    if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+    const tip = document.createElement('div');
+    tip.style.cssText = 'position:absolute;display:none;pointer-events:none;background:var(--panel,#161b26);border:1px solid var(--border,#2a3242);border-radius:8px;padding:8px 10px;font-size:11px;color:var(--text,#e6ebf4);box-shadow:0 6px 20px rgba(0,0,0,.5);z-index:50;white-space:nowrap';
+    parent.appendChild(tip);
+    canvas._tip = tip;
+    const onMove = ev => {
+      const D = canvas._dashDaily;
+      if (!D) { tip.style.display = 'none'; return; }
+      const rect = canvas.getBoundingClientRect();
+      const mx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+      const my = (ev.clientY - rect.top) * (canvas.height / rect.height);
+      const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+      const step = D.barW + D.gap;
+      const i = Math.floor((mx - D.pad.left - D.gap) / step);
+      const withinBar = i >= 0 && i < D.dayKeys.length && (mx - D.pad.left - D.gap - i * step) <= D.barW && my >= D.pad.top && my <= D.pad.top + D.plotH;
+      if (!withinBar) { tip.style.display = 'none'; return; }
+      const k = D.dayKeys[i];
+      const d = D.agg[k] || { mined: 0, rewards: 0, claims: 0, withdrawn: 0 };
+      const rows = [['Mined', d.mined, D.colors.mined], ['Rewards (accrued)', d.rewards, D.colors.rewards], ['Claims', d.claims, D.colors.claims], ['Withdrawals', d.withdrawn, D.colors.withdrawn]]
+        .filter(r => r[1] > 0)
+        .map(r => `<div style="display:flex;align-items:center;gap:6px;margin-top:3px"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${r[2]}"></span><span style="color:var(--text-dim,#8893a7)">${r[0]}</span><span style="margin-left:auto;font-family:var(--mono,monospace)">${fmt(r[1])}</span></div>`).join('');
+      const total = d.mined + d.rewards + d.claims + d.withdrawn;
+      tip.innerHTML = `<div style="font-weight:600;font-family:var(--mono,monospace)">${k}</div>` +
+        (rows || '<div style="margin-top:3px;color:var(--text-dim,#8893a7)">no revenue</div>') +
+        `<div style="margin-top:5px;padding-top:4px;border-top:1px solid var(--border,#2a3242);display:flex;justify-content:space-between;gap:12px"><span>Total</span><span style="font-family:var(--mono,monospace)">${fmt(total)}</span></div>`;
+      tip.style.display = 'block';
+      const px = (D.pad.left + D.gap + i * step + D.barW / 2) * scaleX;
+      const py = my * scaleY;
+      const tw = tip.offsetWidth || 160, th = tip.offsetHeight || 80;
+      let tx = px - tw / 2, ty = py - th - 10;
+      tx = Math.max(4, Math.min(tx, parent.clientWidth - tw - 4));
+      if (ty < 4) ty = py + 14;
+      tip.style.left = tx + 'px'; tip.style.top = ty + 'px';
+    };
+    canvas.addEventListener('mousemove', onMove);
+    canvas.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
   dayKeys.forEach((k, i) => {
     const d = agg[k] || { mined: 0, rewards: 0, claims: 0, withdrawn: 0 };
     const x = pad.left + gap + i * (barW + gap);
@@ -2441,6 +2486,46 @@ function drawDashDaily(dayKeys, agg) {
       { c: colors.claims,   l: 'Claims' },
       { c: colors.withdrawn,l: 'Withdrawals' },
     ].map(e => '<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + e.c + ';margin-right:4px"></span>' + e.l + '</span>').join('');
+  }
+
+  // PBC 04/09 (Stef): hover tooltip — canvas charts have no native <title>, so we
+  // track the mouse, map x → day index and show each series' exact value for that day.
+  canvas._dashDaily = { dayKeys, agg, barW, gap, pad, plotW };
+  if (!canvas._hoverBound) {
+    canvas._hoverBound = true;
+    const host = canvas.parentElement;
+    if (host && getComputedStyle(host).position === 'static') host.style.position = 'relative';
+    const tip = document.createElement('div');
+    tip.style.cssText = 'position:absolute;display:none;pointer-events:none;z-index:30;background:var(--panel,#141a26);border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:11px;font-family:var(--mono);box-shadow:0 4px 16px rgba(0,0,0,.4);white-space:nowrap';
+    host.appendChild(tip);
+    canvas._tip = tip;
+    const names = [['mined','Mined','#d4a843'],['rewards','Rewards','#4ade80'],['claims','Claims','#38bdf8'],['withdrawn','Withdrawals','#a78bfa']];
+    canvas.addEventListener('mousemove', ev => {
+      const D = canvas._dashDaily; if (!D) return;
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const mx = (ev.clientX - rect.left) * scaleX;
+      // Day index from x position (bars: x = pad.left + gap + i*(barW+gap))
+      const step = D.barW + D.gap;
+      let i = Math.floor((mx - D.pad.left - D.gap + D.gap / 2) / step);
+      i = Math.max(0, Math.min(D.dayKeys.length - 1, i));
+      const k = D.dayKeys[i];
+      const d = D.agg[k] || { mined: 0, rewards: 0, claims: 0, withdrawn: 0 };
+      const lines = names.filter(([f]) => (d[f] || 0) > 0)
+        .map(([f, l, c]) => '<div><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + c + ';margin-right:5px"></span>' + l + ': <b>' + fmt(d[f]) + '</b> PBC</div>');
+      const total = d.mined + d.rewards + d.claims + d.withdrawn;
+      tip.innerHTML = '<div style="color:var(--text-dim);margin-bottom:4px">' + k + '</div>' +
+        (lines.length ? lines.join('') : '<div style="color:var(--text-dim)">no revenue</div>') +
+        (total > 0 ? '<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:3px">Total: <b>' + fmt(total) + '</b> PBC</div>' : '');
+      tip.style.display = 'block';
+      // Position next to the cursor, clamped inside the host
+      const hw = host.clientWidth;
+      let tx = ev.clientX - rect.left + 14;
+      if (tx + tip.offsetWidth > hw) tx = ev.clientX - rect.left - tip.offsetWidth - 10;
+      tip.style.left = tx + 'px';
+      tip.style.top = Math.max(0, ev.clientY - rect.top - 10) + 'px';
+    });
+    canvas.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
   }
 }
 
@@ -4957,9 +5042,10 @@ async function loadIncome() {
     });
 
     // PBC FIX (wallet-scope, Option A): deposit rewards = ONLY this wallet's deposits.
-    // get_deposits_accrued is wallet-scoped. PBC FIX (03/09): accrued rewards are
-    // UNREALIZED (still locked at protocol) → shown on their OWN card, EXCLUDED from
-    // Total Income (dashboard convention: claimable lands in income once withdrawn).
+    // get_deposits_accrued is wallet-scoped. PBC OPTION B (04/09, Stef): accrued rewards
+    // (claimable + accumulated) are INCLUDED in Total Income on the « all » view (they
+    // are owed by the protocol, same convention as the dashboard). On PERIOD views they
+    // are EXCLUDED (current state, not boundable to the period) and noted instead.
     let accruedRewards = 0;
     try {
       const deps = await rpc('get_deposits_accrued', { filter: 'all', include_spent: false });
@@ -4983,11 +5069,12 @@ async function loadIncome() {
     // per-period split is not available (period cards stay on-chain, noted).
     const mPool = poolAriaMerged();
     const mergeAll = mPool && val === 'all';
+    const inclAccrued = val === 'all' ? accruedRewards : 0;   // OPTION B (04/09)
     let tiMerged = 0, nonPoolSafe = 0, reconWarn = '';
     if (mergeAll) {
       const nonPool = totalOther - mPool.paid;
       nonPoolSafe = Math.max(0, nonPool);
-      tiMerged = totalMined + mPool.credited + totalRewards + nonPoolSafe;
+      tiMerged = totalMined + mPool.credited + totalRewards + nonPoolSafe + inclAccrued;
       if (nonPool < -0.01 * COIN)
         reconWarn = `<br><span style="color:var(--orange,#f0a050)">⚠ reconciliation: pool paid (${fmtShort(mPool.paid)}) exceeds on-chain non-coinbase received (${fmtShort(totalOther)})</span>`;
     }
@@ -5010,15 +5097,18 @@ async function loadIncome() {
       </div>
       <div class="card">
         <div class="card-label">Total Income (${periodLabel})</div>
-        <div class="card-value" style="font-size:18px">${fmt(mergeAll ? tiMerged : totalMined + totalRewards + totalOther)}</div>
+        <div class="card-value" style="font-size:18px">${fmt(mergeAll ? tiMerged : totalMined + totalRewards + totalOther + inclAccrued)}</div>
         <div class="card-sub">${mergeAll
-          ? `mining ${fmtShort(totalMined)} solo + ${fmtShort(mPool.credited)} pool · interest ${fmtShort(totalRewards)} · +${fmtShort(nonPoolSafe)} other (non-pool)${reconWarn}`
-          : `mining ${fmtShort(totalMined)} + interest ${fmtShort(totalRewards)} + other ${fmtShort(totalOther)}`}</div>
+          ? `mining ${fmtShort(totalMined)} solo + ${fmtShort(mPool.credited)} pool · interest ${fmtShort(totalRewards)} · +${fmtShort(nonPoolSafe)} other (non-pool)${accruedRewards > 0 ? ` · incl. ${fmtShort(accruedRewards)} accrued` : ''}${reconWarn}`
+          : `mining ${fmtShort(totalMined)} + interest ${fmtShort(totalRewards)} + other ${fmtShort(totalOther)}` +
+            (val === 'all'
+              ? (accruedRewards > 0 ? ` · incl. ${fmtShort(accruedRewards)} accrued` : '')
+              : (accruedRewards > 0 ? ` · accrued (${fmtShort(accruedRewards)}) shown in « all » view` : ''))}</div>
       </div>
       <div class="card">
         <div class="card-label">Deposit Rewards Accrued</div>
         <div class="card-value" style="font-size:18px;color:var(--blue)">${fmt(accruedRewards)}</div>
-        <div class="card-sub">not yet realized — lands in income once withdrawn/claimed</div>
+        <div class="card-sub">${val === 'all' ? 'included in Total Income above (all-time view)' : 'current state — included in Total Income on the « all » view'}</div>
       </div>
       <div class="card">
         <div class="card-label">Projected / Year</div>
@@ -5752,7 +5842,7 @@ function poolAriaApplyMerged() {
     `PBC — on-chain ${fmtShort(b.patrimony)} (held, incl. received pool payouts)` +
     ` · <span style="color:var(--blue)">+ Aria pool ${fmtShort(m.receivable)} receivable (off-chain)</span>` +
     `<br><span style="color:var(--text-muted);font-size:11px">= received + receivable · ${pctReceived}% of pool earnings already received</span>` +
-    (b.dep_claimable > 0 ? ` · ${fmtShort(b.dep_claimable)} claimable` : '');
+    (b.dep_claimable + b.dep_claimed > 0 ? ` · ${fmtShort(b.dep_claimable + b.dep_claimed)} accrued interest` : '');
 
   // Vesting Locked = solo vesting + Aria locked (both provably unpaid/unvested)
   document.getElementById('d-vesting').textContent = fmtShort(b.vesting_locked + m.locked);
@@ -5766,15 +5856,16 @@ function poolAriaApplyMerged() {
     q('d-total-mined').innerHTML = `solo ${fmtShort(b.totalMined)} + Aria pool ${fmtShort(m.credited)} (reported)`;
 
   // Total Income = solo + interest + Aria credited + (otherReceived − pool paid)
+  // + accrued deposit interest (OPTION B 04/09: claimable + accumulated counted).
   // The pool paid part is REMOVED from otherReceived (it is inside credited) →
   // no double count. Guard: negative remainder = reconciliation warning.
   const nonPool = b.otherReceived - m.paid;
   const nonPoolSafe = Math.max(0, nonPool);
-  const ti2 = b.totalMined + m.credited + b.totalInterestPaid + nonPoolSafe;
+  const ti2 = b.totalMined + m.credited + b.totalInterestPaid + nonPoolSafe + b.dep_claimable + b.dep_claimed;
   document.getElementById('d-total-income').textContent = fmtShort(ti2);
   let tiSub = `mining ${fmtShort(b.totalMined)} solo + ${fmtShort(m.credited)} pool` +
     ` · interest ${fmtShort(b.totalInterestPaid)} · +${fmtShort(nonPoolSafe)} other (non-pool)` +
-    (b.dep_claimable > 0 ? ` · ${fmtShort(b.dep_claimable)} claimable not yet included` : '');
+    (b.dep_claimable + b.dep_claimed > 0 ? ` · incl. ${fmtShort(b.dep_claimable + b.dep_claimed)} accrued (claimable)` : '');
   if (nonPool < -0.01 * COIN)
     tiSub += `<br><span style="color:var(--orange,#f0a050)">⚠ reconciliation: pool-reported paid (${fmtShort(m.paid)}) exceeds on-chain non-coinbase received (${fmtShort(b.otherReceived)}) — payouts may be in flight or attributed differently</span>`;
   document.getElementById('d-total-income-sub').innerHTML = tiSub;
@@ -5791,8 +5882,8 @@ function poolAriaApplyMerged() {
   if (m.available > 0)
     donutM.push({ label: 'Aria available (payable)', pct: (pat2 > 0 ? m.available / pat2 : 0) * 100, amount: m.available, color: '#22d3ee' });
   donutM.push({ label: 'Deposits (locked)', pct: (pat2 > 0 ? b.dep_locked / pat2 : 0) * 100, amount: b.dep_locked, color: 'var(--gold)' });
-  if (b.dep_claimable > 0)
-    donutM.push({ label: 'Interest claimable', pct: (pat2 > 0 ? b.dep_claimable / pat2 : 0) * 100, amount: b.dep_claimable, color: 'var(--orange,#f0a050)' });
+  if (b.dep_claimable + b.dep_claimed > 0)
+    donutM.push({ label: 'Interest claimable', pct: (pat2 > 0 ? (b.dep_claimable + b.dep_claimed) / pat2 : 0) * 100, amount: b.dep_claimable + b.dep_claimed, color: 'var(--orange,#f0a050)' });
   if (b.withdrawPending > 0)
     donutM.push({ label: 'Withdrawn interest (in wallet)', pct: (pat2 > 0 ? b.withdrawPending / pat2 : 0) * 100, amount: b.withdrawPending, color: 'var(--text-muted)' });
   drawDonut(donutM);
