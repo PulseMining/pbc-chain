@@ -1,7 +1,7 @@
 {
   "name": "pbc-wallet",
   "productName": "PBC",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "PBC — Privacy Bank Chain : portefeuille tout-en-un (noeud + wallet-rpc + interface web)",
   "main": "src/main.js",
   "author": "PBC Chain",

@@ -11,8 +11,8 @@
 
 This repository hosts the **source code only** (no binaries):
 
-- **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.2.15)
-- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.0.14, Windows/Linux) — v1.0.14 brings interface fixes (Daily Revenue chart tooltip, inheritance UX with exact inactivity rules, clickable txids linking to the block explorer, Block column in Transactions, improved wallet picker); it includes the v1.0.13 inheritance stall fix where a mining node could produce invalid blocks when an inheritance execution request was broadcast before its registration was mined (both transactions stuck in every mempool). Includes everything from v1.0.11 (opt-in pool integration, bank statement with running balance, segmented "Daily Inflows" charts)
+- **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.2.16)
+- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.0.15, Windows/Linux) — v1.0.15 backports the official Monero fix (v0.18.4.6) for an RPC/P2P connection race in the epee networking layer that caused repeated SIGSEGV crashes at a pool operator under heavy short-timeout client load; responses are now always served in full and connections closed cleanly. Includes the v1.0.13 inheritance stall fix and the v1.0.14 interface fixes (chart tooltip, inheritance UX, clickable txids, Block column, wallet picker). Includes everything from v1.0.11 (opt-in pool integration, bank statement with running balance, segmented "Daily Inflows" charts)
 - **`BUILD.md`** — build & setup guide (node, wallets, web UI)
 
 The miner source is distributed separately and is not part of this repository.
