@@ -12,7 +12,7 @@
 This repository hosts the **source code only** (no binaries):
 
 - **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.2.15)
-- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.0.13, Windows/Linux) — v1.0.13 fixes a rare network stall where a mining node could produce invalid blocks when an inheritance execution request was broadcast before its registration was mined (both transactions stuck in every mempool). Includes everything from v1.0.11 (opt-in pool integration, bank statement with running balance, segmented "Daily Inflows" charts)
+- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.0.14, Windows/Linux) — v1.0.14 brings interface fixes (Daily Revenue chart tooltip, inheritance UX with exact inactivity rules, clickable txids linking to the block explorer, Block column in Transactions, improved wallet picker); it includes the v1.0.13 inheritance stall fix where a mining node could produce invalid blocks when an inheritance execution request was broadcast before its registration was mined (both transactions stuck in every mempool). Includes everything from v1.0.11 (opt-in pool integration, bank statement with running balance, segmented "Daily Inflows" charts)
 - **`BUILD.md`** — build & setup guide (node, wallets, web UI)
 
 The miner source is distributed separately and is not part of this repository.

@@ -233,6 +233,8 @@ html, body {
 /* ─── Tables ──────────────────────────────────────────────── */
 
 .tbl { width: 100%; border-collapse: collapse; }
+.tx-link { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--text-dim); font-family: var(--mono, monospace); }
+.tx-link:hover { color: var(--gold); border-bottom-color: var(--gold); }
 
 .tbl th {
   text-align: left;
@@ -1137,6 +1139,16 @@ html, body {
             <div style="color:var(--text-dim);font-size:13px">The principal can cancel at any time. This resets the inactivity clock and invalidates any pending claim.</div>
           </div>
         </div>
+        <!-- PBC 05/09 (Stef): exact definition of "inactivity" — verified against consensus code -->
+        <div style="margin-top:16px;background:rgba(212,168,67,.07);border:1px solid var(--gold);border-radius:8px;padding:16px">
+          <div style="color:var(--gold);font-weight:600;margin-bottom:8px">⏱ What « inactivity » means — exactly</div>
+          <div style="color:var(--text-dim);font-size:13px;line-height:1.55">
+            The countdown is <strong>777,600 blocks (~18 months)</strong>. It resets <strong>only</strong> when you perform an action <strong>signed with your own key</strong>:
+            <strong>create a term deposit</strong>, <strong>withdraw deposit rewards</strong>, or <strong>update/cancel this inheritance setup</strong>.<br><br>
+            <strong>Receiving funds does NOT count</strong> — mining rewards, incoming transfers, and deposit claims (even yours) do <strong>not</strong> reset the clock. This is deliberate: only an action you actively sign proves you are alive — a machine mining unattended must never block your heir.<br><br>
+            If you perform any signed activity <strong>after</strong> your heir has submitted a claim request, that request is <strong>automatically cancelled</strong> and the countdown starts over.
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1242,7 +1254,7 @@ html, body {
       <div class="panel-body no-pad">
         <table class="tbl">
           <thead><tr>
-            <th>Date (yyyy-mm-dd hh:mm:ss UTC)</th><th>Type</th><th>Category</th><th class="right">Amount</th>
+            <th>Date (yyyy-mm-dd hh:mm:ss UTC)</th><th class="right">Block</th><th>Type</th><th>Category</th><th class="right">Amount</th>
             <th class="right">Fee</th><th>TXID</th><th>Locked</th>
           </tr></thead>
           <tbody id="txBody"></tbody>
@@ -1832,6 +1844,13 @@ function fmtShort(atomic) {
 }
 function fmtPct(v) { return (v * 100).toFixed(1) + '%'; }
 function shortTx(txid) { return txid ? txid.substring(0,8) + '…' + txid.substring(txid.length-6) : '—'; }
+// PBC 05/09 (Stef): truncated txid stays, but becomes a link to the block explorer
+// (hash route #/tx/<txid>). Use ONLY in HTML contexts — toasts/logs keep shortTx.
+function txLink(txid, full) {
+  if (!txid) return '—';
+  const label = full ? txid : shortTx(txid);
+  return `<a class="tx-link" href="https://privbank.finance/explorer.html#/tx/${txid}" target="_blank" rel="noopener" title="${txid} — open in block explorer">${label}</a>`;
+}
 function tsToDate(ts) {
   if (!ts) return '—';
   const d = new Date(ts * 1000);
@@ -2224,6 +2243,49 @@ function drawDashDaily(dayKeys, agg) {
   if (maxVal === 0) maxVal = 1;
   const COIN = 1e12;
   const colors = { mined: '#d4a843', rewards: '#4ade80', claims: '#38bdf8', withdrawn: '#a78bfa' };
+  // PBC 03/09: hover tooltip — canvas charts have no native <title>, so we track
+  // the pointer and show the per-series values of the day under the cursor.
+  canvas._dashDaily = { dayKeys, agg, pad, plotW, plotH, barW, gap, colors };
+  if (!canvas._hoverBound) {
+    canvas._hoverBound = true;
+    const parent = canvas.parentElement;
+    if (getComputedStyle(parent).position === 'static') parent.style.position = 'relative';
+    const tip = document.createElement('div');
+    tip.style.cssText = 'position:absolute;display:none;pointer-events:none;background:var(--panel,#161b26);border:1px solid var(--border,#2a3242);border-radius:8px;padding:8px 10px;font-size:11px;color:var(--text,#e6ebf4);box-shadow:0 6px 20px rgba(0,0,0,.5);z-index:50;white-space:nowrap';
+    parent.appendChild(tip);
+    canvas._tip = tip;
+    const onMove = ev => {
+      const D = canvas._dashDaily;
+      if (!D) { tip.style.display = 'none'; return; }
+      const rect = canvas.getBoundingClientRect();
+      const mx = (ev.clientX - rect.left) * (canvas.width / rect.width);
+      const my = (ev.clientY - rect.top) * (canvas.height / rect.height);
+      const scaleX = rect.width / canvas.width, scaleY = rect.height / canvas.height;
+      const step = D.barW + D.gap;
+      const i = Math.floor((mx - D.pad.left - D.gap) / step);
+      const withinBar = i >= 0 && i < D.dayKeys.length && (mx - D.pad.left - D.gap - i * step) <= D.barW && my >= D.pad.top && my <= D.pad.top + D.plotH;
+      if (!withinBar) { tip.style.display = 'none'; return; }
+      const k = D.dayKeys[i];
+      const d = D.agg[k] || { mined: 0, rewards: 0, claims: 0, withdrawn: 0 };
+      const rows = [['Mined', d.mined, D.colors.mined], ['Rewards (accrued)', d.rewards, D.colors.rewards], ['Claims', d.claims, D.colors.claims], ['Withdrawals', d.withdrawn, D.colors.withdrawn]]
+        .filter(r => r[1] > 0)
+        .map(r => `<div style="display:flex;align-items:center;gap:6px;margin-top:3px"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:${r[2]}"></span><span style="color:var(--text-dim,#8893a7)">${r[0]}</span><span style="margin-left:auto;font-family:var(--mono,monospace)">${fmt(r[1])}</span></div>`).join('');
+      const total = d.mined + d.rewards + d.claims + d.withdrawn;
+      tip.innerHTML = `<div style="font-weight:600;font-family:var(--mono,monospace)">${k}</div>` +
+        (rows || '<div style="margin-top:3px;color:var(--text-dim,#8893a7)">no revenue</div>') +
+        `<div style="margin-top:5px;padding-top:4px;border-top:1px solid var(--border,#2a3242);display:flex;justify-content:space-between;gap:12px"><span>Total</span><span style="font-family:var(--mono,monospace)">${fmt(total)}</span></div>`;
+      tip.style.display = 'block';
+      const px = (D.pad.left + D.gap + i * step + D.barW / 2) * scaleX;
+      const py = my * scaleY;
+      const tw = tip.offsetWidth || 160, th = tip.offsetHeight || 80;
+      let tx = px - tw / 2, ty = py - th - 10;
+      tx = Math.max(4, Math.min(tx, parent.clientWidth - tw - 4));
+      if (ty < 4) ty = py + 14;
+      tip.style.left = tx + 'px'; tip.style.top = ty + 'px';
+    };
+    canvas.addEventListener('mousemove', onMove);
+    canvas.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+  }
   dayKeys.forEach((k, i) => {
     const d = agg[k] || { mined: 0, rewards: 0, claims: 0, withdrawn: 0 };
     const x = pad.left + gap + i * (barW + gap);
@@ -2863,7 +2925,7 @@ async function loadDeposits() {
       }
 
       return `<tr>
-        <td>${shortTx(d.txid)}</td>
+        <td>${txLink(d.txid)}</td>
         <td class="text">T${tierIdx} (${TIER_SHORT[tierIdx]})</td>
         <td class="right">${fmt(d.amount)}</td>
         <td class="right" style="color:var(--gold)" title="${fmt(accruedDep)} from deposit pool (${depPct}%)  ${fmt(accruedFee)} from fee pool (${feePct}%)">${fmt(claimableNum)}${claimableNum > 0 ? '<div style="font-size:9px;color:var(--text-dim);white-space:nowrap">' + depPct + '% dep · ' + feePct + '% fee</div>' : ''}</td>
@@ -4180,7 +4242,7 @@ function renderTransfers(txs) {
   countEl.textContent = txs.length + ' tx' + (txs.length > 1 ? 's' : '');
 
   if (txs.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="text" style="text-align:center;padding:20px;color:var(--text-dim)">No transactions matching filters</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="text" style="text-align:center;padding:20px;color:var(--text-dim)">No transactions matching filters</td></tr>';
     return;
   }
 
@@ -4192,11 +4254,12 @@ function renderTransfers(txs) {
     const lockIcon = (t.locked) ? '🔒' : (Number(t.unlock_time || 0) > 0) ? '🔓' : '—';
     return `<tr>
       <td class="text">${tsToDate(t.timestamp)}</td>
+      <td class="right" style="color:var(--text-dim);font-size:11px">${t.height || '—'}</td>
       <td class="text" style="color:${color}">${t._cat}</td>
       <td class="text" style="color:${cls.color};font-size:11px">${cls.label}</td>
       <td class="right" style="color:${color}">${sign}${fmt(txDisplayAmount(t))}</td>
       <td class="right">${t.fee ? fmt(t.fee) : '—'}</td>
-      <td>${shortTx(t.txid)}</td>
+      <td>${txLink(t.txid)}</td>
       <td class="text" style="font-size:11px">${lockIcon}</td>
     </tr>`;
   }).join('');
@@ -4378,7 +4441,7 @@ async function loadMempool() {
         <td class="text" style="color:${color}">${type}</td>
         <td class="right" style="color:${color}">${displayAmt}</td>
         <td class="right">${fee ? fmt(fee) : '—'}</td>
-        <td>${shortTx(t.txid)}</td>
+        <td>${txLink(t.txid)}</td>
         <td><span class="badge pending">${t._cat}</span></td>
       </tr>`;
     }).join('');
@@ -4642,7 +4705,7 @@ async function loadStatement() {
         if (balLine !== null) balLine += Number(x.delta || 0);
         return `<tr class="stmt-det" data-day="${key}" style="display:none;background:var(--bg)">
           <td class="text" style="padding-left:26px;color:var(--text-dim)">${hhmm(x.ts)}</td>
-          <td colspan="4" style="color:var(--text-dim);font-size:12px">${x.label} <code style="font-size:9px">${(x.txid || '').slice(0, 12)}…</code></td>
+          <td colspan="4" style="color:var(--text-dim);font-size:12px">${x.label} ${txLink(x.txid)}</td>
           <td class="right" style="color:${x.amt > 0 ? 'var(--green)' : x.amt < 0 ? 'var(--gold)' : 'var(--text-dim)'}">${x.amt !== 0 ? fmt(x.amt) : '—'}</td>
           <td class="right" style="color:var(--text-dim)">${x.fee > 0 ? fmt(x.fee) : '—'}</td>
           <td class="right" style="color:var(--text-dim);font-size:11px" title="Total wallet balance after this operation (vesting and maturing change included)">${balLine !== null ? fmt(balLine) : '—'}</td>
@@ -5390,10 +5453,20 @@ async function doInheritSetup() {
   const priority = 0;
   const el = document.getElementById('inhSetupResult');
   if (!addr) { el.innerHTML = '<span style="color:var(--red)">Enter heir address.</span>'; return; }
+  // PBC 05/09 (Stef): block self-inheritance — designating yourself as your own heir
+  // is meaningless (your "inheritance" would just execute against your own wallet).
+  // UI guard only; the protocol itself is unchanged.
+  if (!_myAddress) {
+    try { const ad = await rpc('get_address'); _myAddress = ad.address || ''; } catch(e) {}
+  }
+  if (_myAddress && addr === _myAddress) {
+    el.innerHTML = '<span style="color:var(--red)">✗ You cannot designate yourself as your own heir — this is your wallet\'s address. Choose a different heir.</span>';
+    return;
+  }
   el.innerHTML = '<span style="color:var(--text-dim)">⏳ Sending transaction…</span>';
   try {
     const r = await rpc('pbc_inherit_setup', { heir_address: addr, priority });
-    el.innerHTML = `<span style="color:var(--green)">✔ Setup TX sent — <code>${r.tx_hash}</code></span>`;
+    el.innerHTML = `<span style="color:var(--green)">✔ Setup TX sent — ${txLink(r.tx_hash, true)}</span>`;
     setTimeout(loadInheritance, 2000);
   } catch(e) {
     el.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`;
@@ -5409,7 +5482,7 @@ async function doInheritCancel() {
   el.innerHTML = '<span style="color:var(--text-dim)">⏳ Sending transaction…</span>';
   try {
     const r = await rpc('pbc_inherit_cancel', {});
-    el.innerHTML = `<span style="color:var(--green)">✔ Cancel TX sent — <code>${r.tx_hash}</code></span>`;
+    el.innerHTML = `<span style="color:var(--green)">✔ Cancel TX sent — ${txLink(r.tx_hash, true)}</span>`;
     setTimeout(loadInheritance, 2000);
   } catch(e) {
     el.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`;
@@ -5424,7 +5497,7 @@ async function doInheritRequest() {
   el.innerHTML = '<span style="color:var(--text-dim)">⏳ Sending transaction…</span>';
   try {
     const r = await rpc('pbc_inherit_request', { principal_address: addr, priority });
-    el.innerHTML = `<span style="color:var(--green)">✔ Request TX sent — <code>${r.tx_hash}</code></span>`;
+    el.innerHTML = `<span style="color:var(--green)">✔ Request TX sent — ${txLink(r.tx_hash, true)}</span>`;
     setTimeout(loadInheritance, 2000);
   } catch(e) {
     el.innerHTML = `<span style="color:var(--red)">✗ ${e.message}</span>`;
@@ -5701,7 +5774,7 @@ function _renderSellerRow(d, currentAskPrice) {
             <span style="background:rgba(220,50,50,.15);color:#f87171;border:1px solid #f87171;padding:3px 10px;border-radius:4px;font-size:12px;font-weight:600">⚠ MATURE — DELIST REQUIRED</span>
             ${tierBadge}
           </div>
-          <code style="font-size:11px;color:var(--text-dim)">${(d.txid||'').slice(0,16)}…${(d.txid||'').slice(-8)}</code>
+          ${txLink(d.txid)}
           <div style="font-size:12px;color:var(--text-dim);margin-top:4px">This deposit has matured. It can no longer be traded — please delist it and claim your rewards.</div>
         </div>
         <div onclick="event.stopPropagation()">
@@ -5738,7 +5811,7 @@ function _renderSellerRow(d, currentAskPrice) {
             ${tierBadge}
             <span style="font-size:11px;color:var(--text-dim)">click for details</span>
           </div>
-          <code style="font-size:11px;color:var(--text-dim)">${(d.txid||'').slice(0,16)}…${(d.txid||'').slice(-8)}</code>
+          ${txLink(d.txid)}
           <div style="margin-top:6px;display:flex;gap:20px;align-items:baseline">
             <div><span style="font-size:11px;color:var(--text-dim)">Principal: </span><strong>${_fmtPbc(principal)}</strong></div>
             <div><span style="font-size:11px;color:var(--text-dim)">Ask (seller price): </span><strong style="color:var(--green);font-size:16px">${_fmtPbc(currentAskPrice)}</strong></div>
@@ -5762,7 +5835,7 @@ function _renderSellerRow(d, currentAskPrice) {
               <span style="background:rgba(255,184,0,.12);color:var(--gold);padding:3px 10px;border-radius:4px;font-size:12px">✓ MATURE — CLAIMABLE</span>
               ${tierBadge}
             </div>
-            <code style="font-size:11px;color:var(--text-dim)">${(d.txid||'').slice(0,16)}…${(d.txid||'').slice(-8)}</code>
+            ${txLink(d.txid)}
             <div style="font-size:12px;color:var(--text-dim);margin-top:3px">Principal: <strong style="color:var(--text)">${_fmtPbc(principal)}</strong> — go to Deposits to claim</div>
           </div>
         </div>
@@ -5794,7 +5867,7 @@ function _renderSellerRow(d, currentAskPrice) {
             ${notListedBadge}
             ${tierBadge}
           </div>
-          <code style="font-size:11px;color:var(--text-dim)">${(d.txid||'').slice(0,16)}…${(d.txid||'').slice(-8)}</code>
+          ${txLink(d.txid)}
           <div style="font-size:12px;color:var(--text-dim);margin-top:3px">Principal: <strong style="color:var(--text)">${_fmtPbc(principal)}</strong></div>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">${listControls}</div>

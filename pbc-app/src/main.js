@@ -7,7 +7,7 @@
 //   - arrêt : taskkill /T /F (Windows) / SIGTERM (POSIX)
 //   - données : app.getPath('userData') (%APPDATA%\PBC ou ~/.config/PBC)
 
-const { app, BrowserWindow, Tray, Menu, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, ipcMain, shell } = require('electron');
 const { spawn, execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -208,7 +208,44 @@ function createWindow() {
   win.loadURL(`http://127.0.0.1:${WEBUI_PORT}`);
   log('[pbc] window opened on', `http://127.0.0.1:${WEBUI_PORT}`);
   win.on('closed', () => { win = null; });
+  // PBC 05/09 (Stef): external links (block explorer) must open in the SYSTEM
+  // browser, never inside the app window. target="_blank" links land here.
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\//.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
 }
+
+// PBC 05/09 (Stef): "Browse…" button on the setup screen — let the user pick a
+// wallet file anywhere on disk, then import it (file + .keys) into the managed
+// wallet dir so wallet-rpc can open it (open_wallet only works inside --wallet-dir).
+ipcMain.handle('wallet:pick-file', async () => {
+  try {
+    const r = await dialog.showOpenDialog({
+      title: 'Select a PBC wallet file',
+      defaultPath: WALLETS,
+      properties: ['openFile'],
+    });
+    if (r.canceled || !r.filePaths || !r.filePaths[0]) return { ok: false, error: 'cancelled' };
+    const src = r.filePaths[0];
+    const base = path.basename(src);
+    if (base.endsWith('.keys')) return { ok: false, error: 'select the wallet file, not the .keys file' };
+    if (!/^[A-Za-z0-9_-]+$/.test(base)) return { ok: false, error: 'invalid wallet name (letters, digits, - and _ only)' };
+    const dst = path.join(WALLETS, base);
+    if (path.resolve(src) !== path.resolve(dst)) {
+      fs.copyFileSync(src, dst);
+      if (fs.existsSync(src + '.keys')) fs.copyFileSync(src + '.keys', dst + '.keys');
+    }
+    return { ok: true, name: base };
+  } catch (e) {
+    return { ok: false, error: e.message || 'pick failed' };
+  }
+});
+
+// PBC 05/09: open an https URL in the system browser (restricted to our domain).
+ipcMain.handle('shell:open-external', async (_evt, url) => {
+  if (typeof url === 'string' && /^https:\/\/privbank\.finance\//.test(url)) shell.openExternal(url);
+});
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
