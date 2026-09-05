@@ -58,7 +58,7 @@ using epee::string_tools::pod_to_hex;
 using namespace crypto;
 
 // Increase when the DB structure changes
-#define VERSION 6
+#define VERSION 7
 
 namespace
 {
@@ -6737,6 +6737,96 @@ void BlockchainLMDB::migrate_5_6()
   throw std::runtime_error("DB migration 5→6 requires full resync — delete LMDB and restart");
 }
 
+void BlockchainLMDB::migrate_6_7()
+{
+  // PBC FIX (v8.2.17): bi_cum_rct undercounted the amount-0 RCT index space:
+  // pbc_withdraw outputs (TERM_WITHDRAW / MARKET_PAYOUT_CLAIM, RCTTypeNull,
+  // clear amounts) are STORED in the amount-0 bucket (add_transaction) but were
+  // never COUNTED (add_block). Recompute every block's bi_cum_rct from the
+  // actual amount-0 outputs, exactly like migrate_2_3 does — in place, no
+  // resync needed.
+  LOG_PRINT_L3("BlockchainLMDB::" << __func__);
+  int result;
+
+  MGINFO_YELLOW("Migrating blockchain from DB version 6 to 7 (recomputing RCT output distribution) - this may take a while:");
+
+  mdb_txn_safe txn(false);
+  result = mdb_txn_begin(m_env, NULL, 0, txn);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to create a transaction for the db: ", result).c_str()));
+
+  MDB_stat db_stats;
+  if ((result = mdb_stat(txn, m_blocks, &db_stats)))
+    throw0(DB_ERROR(lmdb_error("Failed to query m_blocks: ", result).c_str()));
+  const uint64_t blockchain_height = db_stats.ms_entries;
+
+  MDEBUG("enumerating rct outputs...");
+  std::vector<uint64_t> distribution(blockchain_height, 0);
+  bool r = for_all_outputs(0, [&](uint64_t height) {
+    if (height >= blockchain_height)
+    {
+      MERROR("Output found claiming height >= blockchain height");
+      return false;
+    }
+    distribution[height]++;
+    return true;
+  });
+  if (!r)
+    throw0(DB_ERROR("Failed to build rct output distribution"));
+  for (size_t i = 1; i < distribution.size(); ++i)
+    distribution[i] += distribution[i - 1];
+
+  MDB_cursor *c_info;
+  uint64_t done = 0;
+  for (uint64_t h = 0; h < blockchain_height; ++h)
+  {
+    if (!(done % 1000))
+    {
+      if (done)
+      {
+        LOGIF(el::Level::Info) {
+          std::cout << done << " / " << blockchain_height << "  \r" << std::flush;
+        }
+        txn.commit();
+        result = mdb_txn_begin(m_env, NULL, 0, txn);
+        if (result)
+          throw0(DB_ERROR(lmdb_error("Failed to create a transaction for the db: ", result).c_str()));
+      }
+      result = mdb_cursor_open(txn, m_block_info, &c_info);
+      if (result)
+        throw0(DB_ERROR(lmdb_error("Failed to open a cursor for block_info: ", result).c_str()));
+    }
+    MDB_val_set(hv, h);
+    result = mdb_cursor_get(c_info, (MDB_val *)&zerokval, &hv, MDB_GET_BOTH);
+    if (result)
+      throw0(BLOCK_DNE(lmdb_error("Failed to get block_info for recompute: ", result).c_str()));
+    mdb_block_info bi = *(const mdb_block_info*)hv.mv_data;
+    bi.bi_cum_rct = distribution[h];
+    MDB_val nv;
+    nv.mv_data = &bi;
+    nv.mv_size = sizeof(bi);
+    result = mdb_cursor_put(c_info, (MDB_val *)&zerokval, &nv, MDB_CURRENT);
+    if (result)
+      throw0(DB_ERROR(lmdb_error("Failed to update block_info bi_cum_rct: ", result).c_str()));
+    ++done;
+  }
+  txn.commit();
+
+  uint32_t version = 7;
+  MDB_val v;
+  v.mv_data = (void *)&version;
+  v.mv_size = sizeof(version);
+  MDB_val_str(vk, "version");
+  result = mdb_txn_begin(m_env, NULL, 0, txn);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to create a transaction for the db: ", result).c_str()));
+  result = mdb_put(txn, m_properties, &vk, &v, 0);
+  if (result)
+    throw0(DB_ERROR(lmdb_error("Failed to update version for the db: ", result).c_str()));
+  txn.commit();
+  MGINFO("RCT output distribution recomputed for " << done << " blocks (DB version 7)");
+}
+
 void BlockchainLMDB::migrate(const uint32_t oldversion)
 {
   if (oldversion < 1)
@@ -6751,6 +6841,8 @@ void BlockchainLMDB::migrate(const uint32_t oldversion)
     migrate_4_5();
   if (oldversion < 6)
     migrate_5_6();
+  if (oldversion < 7)
+    migrate_6_7();
 }
 
 }  // namespace cryptonote

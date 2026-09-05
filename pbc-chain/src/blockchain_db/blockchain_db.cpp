@@ -341,7 +341,14 @@ uint64_t BlockchainDB::add_block( const std::pair<block, blobdata>& blck
     add_transaction(blk_hash, tx, &tx_hash);
     for (const auto &vout: tx.first.vout)
     {
-      if (vout.amount == 0)
+      // PBC FIX (v8.2.17): count exactly what add_transaction stores in the
+      // amount-0 RCT bucket. TERM_WITHDRAW / MARKET_PAYOUT_CLAIM txs (vin
+      // txin_pbc_withdraw, RCTTypeNull, clear amounts) ARE stored there
+      // (see add_transaction: out_rct.amount = 0) but were never counted,
+      // which made bi_cum_rct undercount the real RCT index space and broke
+      // wallet decoy selection (error::get_output_distribution).
+      if (vout.amount == 0 ||
+          (tx.first.version > 1 && tx.first.rct_signatures.type == rct::RCTTypeNull))
         ++num_rct_outs;
     }
     ++tx_i;

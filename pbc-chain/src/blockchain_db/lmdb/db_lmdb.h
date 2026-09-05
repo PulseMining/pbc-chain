@@ -547,6 +547,9 @@ private:
   // migrate from DB version 5 to 6 (PBC uint128 indices — requires full resync)
   void migrate_5_6();
 
+  // migrate from DB version 6 to 7 (recompute bi_cum_rct incl. pbc_withdraw outputs)
+  void migrate_6_7();
+
   void cleanup_batch();
 
 private:
