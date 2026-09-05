@@ -7175,6 +7175,9 @@ leave:
             MERROR("PBC INHERIT: malformed SETUP tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7192,6 +7195,9 @@ leave:
             MERROR("PBC INHERIT: invalid SETUP owner_sig tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7286,6 +7292,9 @@ leave:
             MERROR("PBC INHERIT: malformed REQUEST tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7298,6 +7307,9 @@ leave:
             MERROR("PBC INHERIT: REQUEST for missing principal record tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7307,6 +7319,9 @@ leave:
             MERROR("PBC INHERIT: REQUEST signer is not heir tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7323,6 +7338,9 @@ leave:
             MERROR("PBC INHERIT: invalid REQUEST owner_sig tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7375,6 +7393,9 @@ leave:
             MERROR("PBC INHERIT: malformed CANCEL tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7386,6 +7407,9 @@ leave:
             MERROR("PBC INHERIT: CANCEL for missing principal record tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7401,6 +7425,9 @@ leave:
             MERROR("PBC INHERIT: invalid CANCEL owner_sig tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7474,6 +7501,9 @@ leave:
             MERROR("PBC TESTAMENT: malformed carrier tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7483,6 +7513,9 @@ leave:
             MERROR("PBC TESTAMENT: principal/owner mismatch tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -7498,6 +7531,9 @@ leave:
             MERROR("PBC TESTAMENT: invalid owner_sig tx=" << tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -8224,6 +8260,9 @@ leave:
             << " tx=" << tx_id << " — " << fail_reason);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8248,6 +8287,9 @@ leave:
                 << " tx=" << tx_id << " — deposit_id already exists in DB");
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -8267,6 +8309,9 @@ leave:
                 << " tx=" << tx_id << " — " << rct_fail_reason);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -8296,6 +8341,9 @@ leave:
                 << " max=" << PBC_MAX_DEPOSITS_PER_ADDR);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -8386,6 +8434,9 @@ leave:
             << " tx=" << claim_tx_id << " — " << claim_fail_reason);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8401,6 +8452,9 @@ leave:
               << " in block " << block_height << " tx=" << claim_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -8418,6 +8472,9 @@ leave:
               << " block=" << block_height);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -8505,6 +8562,9 @@ leave:
               << " yields zero reward — rejected");
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -8587,6 +8647,9 @@ leave:
           MERROR("PBC MARKET: malformed LOCK_COLLATERAL tx=" << lock_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8598,6 +8661,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL missing deposit tx=" << lock_tx_id << " deposit=" << lock_field.deposit_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8609,6 +8675,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL deposit not yet active tx=" << lock_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8617,6 +8686,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL seller mismatch tx=" << lock_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8626,6 +8698,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL deposit already locked tx=" << lock_tx_id << " existing=" << existing_lock_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8634,6 +8709,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL buyer == seller tx=" << lock_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8642,6 +8720,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL backing output missing tx=" << lock_tx_id << " amount=" << lock_field.amount);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8664,6 +8745,9 @@ leave:
               << ") tx=" << lock_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -8681,6 +8765,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL expiry out of range tx=" << lock_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8693,6 +8780,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL blocked by active inheritance request tx=" << lock_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8703,6 +8793,9 @@ leave:
           MERROR("PBC MARKET: LOCK_COLLATERAL buyer signature invalid tx=" << lock_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8743,6 +8836,9 @@ leave:
                 << " tx=" << lock_tx_id << " — " << claim_fail);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -8829,6 +8925,9 @@ leave:
           MERROR("PBC MARKET: malformed CANCEL_LOCK tx=" << cancel_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8839,6 +8938,9 @@ leave:
           MERROR("PBC MARKET: CANCEL_LOCK missing lock tx=" << cancel_tx_id << " lock=" << cancel_field.lock_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8847,6 +8949,9 @@ leave:
           MERROR("PBC MARKET: CANCEL_LOCK lock not active tx=" << cancel_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8858,6 +8963,9 @@ leave:
             MERROR("PBC MARKET: CANCEL_LOCK voluntary signature invalid tx=" << cancel_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -8867,6 +8975,9 @@ leave:
           MERROR("PBC MARKET: CANCEL_LOCK expiry too early tx=" << cancel_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8876,6 +8987,9 @@ leave:
           MERROR("PBC MARKET: CANCEL_LOCK refund output missing tx=" << cancel_tx_id << " amount=" << rec.amount);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8904,6 +9018,9 @@ leave:
           MERROR("PBC MARKET: malformed TRANSFER tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8915,6 +9032,9 @@ leave:
           MERROR("PBC MARKET: transfer references missing deposit tx=" << xfer_tx_id << " deposit=" << xfer_field.deposit_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8926,6 +9046,9 @@ leave:
           MERROR("PBC MARKET: invalid owner transition tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8938,6 +9061,9 @@ leave:
           MERROR("PBC MARKET: transfer blocked by active inheritance request tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8948,6 +9074,9 @@ leave:
           MERROR("PBC MARKET: invalid owner signature tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8958,6 +9087,9 @@ leave:
           MERROR("PBC MARKET: transfer missing collateral lock tx=" << xfer_tx_id << " lock=" << xfer_field.lock_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8966,6 +9098,9 @@ leave:
           MERROR("PBC MARKET: transfer collateral lock invalid tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8974,6 +9109,9 @@ leave:
           MERROR("PBC MARKET: transfer tx expected indices are not bound to lock snapshot tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8982,6 +9120,9 @@ leave:
           MERROR("PBC MARKET: transfer collateral lock expired tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8990,6 +9131,9 @@ leave:
           MERROR("PBC MARKET: transfer expected indices mismatch tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -8998,6 +9142,9 @@ leave:
           MERROR("PBC MARKET: transfer conflicts with withdraw in same block tx=" << xfer_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9006,6 +9153,9 @@ leave:
           MERROR("PBC MARKET: transfer seller payment output missing tx=" << xfer_tx_id << " amount=" << lock_rec.amount);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9039,6 +9189,9 @@ leave:
           MERROR("PBC MARKET: transfer implicit claim failed tx=" << xfer_tx_id << " — " << claim_apply_fail);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9073,6 +9226,9 @@ leave:
           MERROR("PBC MARKET ASK: malformed MARKET_ASK tx=" << ask_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9085,6 +9241,9 @@ leave:
           MERROR("PBC MARKET ASK: deposit not found tx=" << ask_tx_id << " deposit=" << ask_field.deposit_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9095,6 +9254,9 @@ leave:
           MERROR("PBC MARKET ASK: seller is not deposit owner tx=" << ask_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9106,6 +9268,9 @@ leave:
             << " unlock_height=" << dep_rec.unlock_height << " block=" << block_height);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9125,6 +9290,9 @@ leave:
             MERROR("PBC MARKET ASK: invalid seller_sig tx=" << ask_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9237,6 +9405,9 @@ leave:
             << " tx=" << p_tx_id << " — " << p_fail);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9249,6 +9420,9 @@ leave:
           MERROR("PBC MKTPAY: MARKET_PAYOUT_CLAIM vin not exactly 1 txin_pbc_withdraw tx=" << p_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9257,6 +9431,9 @@ leave:
           MERROR("PBC MKTPAY: MARKET_PAYOUT_CLAIM fee must be 0 tx=" << p_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9265,6 +9442,9 @@ leave:
           MERROR("PBC MKTPAY: MARKET_PAYOUT_CLAIM rct type must be Null tx=" << p_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9277,6 +9457,9 @@ leave:
             << " tx=" << p_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9286,6 +9469,9 @@ leave:
             << " stored=" << mktpay_balance << " seller=" << seller_pubkey << " tx=" << p_tx_id);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9299,6 +9485,9 @@ leave:
             MERROR("PBC MKTPAY: MARKET_PAYOUT_CLAIM missing payout_claim field tx=" << p_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9309,6 +9498,9 @@ leave:
               << " tx=" << p_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9336,6 +9528,9 @@ leave:
                 << " tx=" << p_tx_id);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -9352,6 +9547,9 @@ leave:
               MERROR("PBC MKTPAY: MARKET_PAYOUT_CLAIM vout sum overflow tx=" << p_tx_id);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -9363,6 +9561,9 @@ leave:
               << " payout=" << payout_amount << " tx=" << p_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9500,6 +9701,9 @@ leave:
             << " tx=" << w_tx_id << " — " << w_fail_reason);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
+          // PBC: return taken txs to the pool on block failure (was leaking
+          // them out of every mempool on each rejected block — 04/09 incident)
+          return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
         }
@@ -9514,6 +9718,9 @@ leave:
               << " — vin is not exactly 1 txin_pbc_withdraw");
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9523,6 +9730,9 @@ leave:
               << " — fee must be 0");
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9532,6 +9742,9 @@ leave:
               << " — rct type must be Null");
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9544,6 +9757,9 @@ leave:
                 << " — deposit_id mismatch vin vs extra");
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -9558,6 +9774,9 @@ leave:
               << " in block " << block_height << " tx=" << w_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9573,6 +9792,9 @@ leave:
               << " block=" << block_height);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9585,6 +9807,9 @@ leave:
               << " block=" << block_height);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9604,6 +9829,9 @@ leave:
               << " tx=" << w_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9617,6 +9845,9 @@ leave:
               << " accumulated_reward=" << dep_rec.accumulated_reward);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9628,6 +9859,9 @@ leave:
               << " tx=" << w_tx_id);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
           }
@@ -9640,6 +9874,9 @@ leave:
                 << " tx=" << w_tx_id);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -9650,6 +9887,9 @@ leave:
                 << " tx=" << w_tx_id);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -9666,6 +9906,9 @@ leave:
                   << " tx=" << w_tx_id);
                 if (pbc_started_batch) m_db->batch_abort();
                 m_batch_success = false;
+                // PBC: return taken txs to the pool on block failure (was leaking
+                // them out of every mempool on each rejected block — 04/09 incident)
+                return_txs_to_pool();
                 bvc.m_verifivation_failed = true;
                 return false;
               }
@@ -9678,6 +9921,9 @@ leave:
                 << " deposit=" << deposit_id << " tx=" << w_tx_id);
               if (pbc_started_batch) m_db->batch_abort();
               m_batch_success = false;
+              // PBC: return taken txs to the pool on block failure (was leaking
+              // them out of every mempool on each rejected block — 04/09 incident)
+              return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
             }
@@ -9788,6 +10034,9 @@ leave:
       LOG_ERROR("PBC pool state update failed: " << e.what());
       if (pbc_started_batch) m_db->batch_abort();
       m_batch_success = false;
+      // PBC: return taken txs to the pool on block failure (was leaking
+      // them out of every mempool on each rejected block — 04/09 incident)
+      return_txs_to_pool();
       bvc.m_verifivation_failed = true;
       return false;
     }

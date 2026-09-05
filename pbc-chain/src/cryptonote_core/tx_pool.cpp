@@ -908,6 +908,80 @@ namespace cryptonote
       }
     }
 
+    // ── Inheritance mempool precheck: INHERIT_REQUEST ──
+    // A request whose principal inheritance record exists neither in the chain
+    // nor in this pool (as a pending INHERIT_SETUP for that principal) can NEVER
+    // be mined: the block-apply consensus check ("PBC INHERIT: REQUEST for
+    // missing principal record", blockchain.cpp) requires the record to exist
+    // in the committed chain state — even a SETUP in the same block is not
+    // visible (read-only snapshot). Without this admission check, orphan
+    // requests would sit in every mempool forever (spam surface). When the
+    // setup IS pooled, the request is admissible: fill_block_template skips it
+    // until the setup is committed, then includes it naturally. Soft-reject:
+    // no peer penalty.
+    if (!kept_by_block)
+    {
+      std::vector<tx_extra_field> req_fields;
+      tx_extra_pbc_tx_type req_type{};
+      const bool adm_parsed = parse_tx_extra(tx.extra, req_fields);
+      const bool adm_type_found = adm_parsed && find_tx_extra_field_by_type(req_fields, req_type);
+      if (adm_parsed && adm_type_found && req_type.type == PBC_TX_TYPE_INHERIT_REQUEST)
+      {
+        tx_extra_pbc_inherit_target tgt_f{};
+        if (!find_tx_extra_field_by_type(req_fields, tgt_f))
+        {
+          LOG_PRINT_L1("PBC mempool precheck: rejected inherit_request tx=" << id << " reason=target_field_missing");
+          tvc.m_verifivation_failed = true;
+          tvc.m_no_drop_offense = true;
+          return false;
+        }
+
+        bool rec_ok = false;
+        {
+          CRITICAL_REGION_LOCAL1(m_blockchain);
+          uint8_t rec_buf[PBC_INHERIT_RECORD_PACKED_SIZE];
+          size_t rec_sz = PBC_INHERIT_RECORD_PACKED_SIZE;
+          rec_ok = m_blockchain.get_db().get_pbc_inherit_record(tgt_f.principal_spend_pubkey, rec_buf, rec_sz);
+        }
+
+        if (!rec_ok)
+        {
+          // Legitimate case: the SETUP is still pending in this pool — the
+          // request becomes mineable once the setup is committed (template
+          // policy skips it until then).
+          CRITICAL_REGION_LOCAL1(m_blockchain);
+          m_blockchain.for_all_txpool_txes(
+            [&](const crypto::hash &pooled_txid, const txpool_tx_meta_t &, const cryptonote::blobdata_ref *bd) -> bool
+            {
+              if (rec_ok || !bd) return true;
+              cryptonote::transaction pooled_tx;
+              if (!cryptonote::parse_and_validate_tx_from_blob(*bd, pooled_tx)) return true;
+              std::vector<tx_extra_field> pf;
+              tx_extra_pbc_tx_type pt{};
+              tx_extra_pbc_owner_key pk{};
+              if (parse_tx_extra(pooled_tx.extra, pf)
+                  && find_tx_extra_field_by_type(pf, pt)
+                  && pt.type == PBC_TX_TYPE_INHERIT_SETUP
+                  && find_tx_extra_field_by_type(pf, pk)
+                  && pk.owner_spend_pubkey == tgt_f.principal_spend_pubkey)
+                rec_ok = true;
+              return true;
+            }, true, relay_category::all);
+        }
+
+        if (!rec_ok)
+        {
+          LOG_PRINT_L1("PBC mempool precheck: rejected inherit_request tx=" << id
+            << " reason=principal_record_not_found principal=" << tgt_f.principal_spend_pubkey);
+          tvc.m_verifivation_failed = true;
+          tvc.m_no_drop_offense = true;
+          return false;
+        }
+
+        LOG_PRINT_L2("PBC mempool precheck: accepted inherit_request tx=" << id << " principal=" << tgt_f.principal_spend_pubkey);
+      }
+    }
+
     // ── PBC mempool precheck: reject deposit TXs that would exceed per-address limit ──
     // Mirrors the consensus check in blockchain.cpp (anti-split) but at mempool level.
     // Prevents griefing where a miner/pool includes a TX that causes block rejection.
@@ -2561,6 +2635,47 @@ namespace cryptonote
         LOG_PRINT_L2("  not ready to go");
         continue;
       }
+
+      // PBC: an INHERIT_REQUEST is only mineable once the principal's inheritance
+      // record exists in the COMMITTED chain state. The block-apply consensus check
+      // (blockchain.cpp "PBC INHERIT: REQUEST for missing principal record") reads
+      // the record through a read-only snapshot (TXN_PREFIX_RDONLY) — a SETUP in
+      // the very same block is NOT visible — so a request can never verify in the
+      // same block as its setup. Including it makes EVERY produced block invalid
+      // (observed live 04/09: a wallet broadcast setup+request 23 s apart, both
+      // relayed into every mempool network-wide, and 9 blocks were rejected).
+      // Skip the request until the setup is committed in a previous block; the
+      // pool entry is untouched, so the request becomes eligible naturally once
+      // its setup is mined. Miner policy only — block validation is unchanged.
+      {
+        // NOTE: `tx` above may be DEFAULT-CONSTRUCTED — is_transaction_ready_to_go
+        // parses the blob LAZILY (only if check_tx_inputs dereferences it), so
+        // tx.extra is not reliable here. Parse the prefix ourselves.
+        cryptonote::transaction_prefix tpl_pfx;
+        std::vector<tx_extra_field> req_tpl_fields;
+        tx_extra_pbc_tx_type pbc_type{};
+        const bool tpl_parsed = parse_and_validate_tx_prefix_from_blob(txblob, tpl_pfx)
+            && parse_tx_extra(tpl_pfx.extra, req_tpl_fields);
+        const bool tpl_type_found = tpl_parsed && find_tx_extra_field_by_type(req_tpl_fields, pbc_type);
+        if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_INHERIT_REQUEST)
+        {
+          tx_extra_pbc_inherit_target tgt{};
+          bool record_onchain = false;
+          if (find_tx_extra_field_by_type(req_tpl_fields, tgt))
+          {
+            uint8_t rec_buf[PBC_INHERIT_RECORD_PACKED_SIZE];
+            size_t rec_sz = sizeof(rec_buf);
+            record_onchain = m_blockchain.get_db().get_pbc_inherit_record(tgt.principal_spend_pubkey, rec_buf, rec_sz);
+          }
+          if (!record_onchain)
+          {
+            MGINFO("PBC INHERIT: REQUEST " << sorted_it->second
+                  << " skipped in block template — principal record not committed on-chain yet");
+            continue;
+          }
+        }
+      }
+
       if (have_key_images(k_images, tx))
       {
         LOG_PRINT_L2("  key images already seen");
