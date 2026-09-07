@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="g" cx="32%" cy="30%" r="75%">
+      <stop offset="0%" stop-color="#e8c87e"/>
+      <stop offset="70%" stop-color="#d4a853"/>
+      <stop offset="100%" stop-color="#8a6a2a"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="url(#g)"/>
+  <circle cx="32" cy="32" r="30" fill="none" stroke="#6b5220" stroke-width="1.5"/>
+  <circle cx="32" cy="32" r="25" fill="none" stroke="rgba(255,255,255,.35)" stroke-width="1"/>
+  <text x="32" y="37.5" font-family="Segoe UI, Arial, sans-serif" font-size="15" font-weight="800" fill="#0a0f16" text-anchor="middle">PBC</text>
+</svg>
