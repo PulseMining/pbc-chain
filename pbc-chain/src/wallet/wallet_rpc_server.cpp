@@ -7297,11 +7297,30 @@ bool wallet_rpc_server::on_claim_market_payout(const wallet_rpc::COMMAND_RPC_CLA
 
   try
   {
+    // FIX-2 (08/09/2026): idempotence côté serveur — un client en boucle ne peut plus émettre
+    // N claims du même solde. Clé effective : celle du client si fournie, sinon dérivée du
+    // (vendeur + montant) → toute répétition dans la fenêtre d'idempotence (10 min, ou tant
+    // qu'une précédente est en vol) est rejetée au lieu de construire une 2ᵉ tx.
+    const std::string idem_key = req.idempotency_key.empty()
+      ? (std::string("claim_market_payout:") + epee::string_tools::pod_to_hex(spend_pub) + ":" + std::to_string(daemon_res.payout_amount))
+      : req.idempotency_key;
+    std::string idem_prior;
+    if (!idempotency_begin(idem_key, idem_prior))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR;
+      er.message = idem_prior.empty()
+        ? "Duplicate request: a marketplace payout claim is already in progress."
+        : ("Duplicate request: this marketplace payout was already claimed (tx " + idem_prior + ").");
+      return false;
+    }
+    idempotency_scope idem_guard(this, idem_key);
+
     wallet2::pending_tx ptx = m_wallet->create_market_payout_claim_tx(daemon_res.payout_amount, req.priority);
     cryptonote::transaction tx = ptx.tx;
     m_wallet->commit_tx(ptx);
     res.tx_hash      = epee::string_tools::pod_to_hex(get_transaction_hash(tx));
     res.payout_amount = daemon_res.payout_amount;
+    idem_guard.commit(res.tx_hash);
     return true;
   }
   catch (const std::exception& e)

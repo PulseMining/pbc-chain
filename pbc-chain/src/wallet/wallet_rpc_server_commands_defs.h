@@ -3759,8 +3759,10 @@ namespace wallet_rpc
     struct request_t
     {
       uint32_t priority = 0;
+      std::string idempotency_key; // optional client key; server derives one from seller+amount when empty (FIX-2, 08/09/2026)
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(priority)
+        KV_SERIALIZE(idempotency_key)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<request_t> request;

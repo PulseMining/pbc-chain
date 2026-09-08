@@ -715,6 +715,44 @@ namespace cryptonote
           }
         }
 
+        // PBC anti-double-submission (mempool POLICY, not consensus — does NOT change block validity).
+        // Reject this claim if another MARKET_PAYOUT_CLAIM from the SAME seller is already pending in
+        // the pool. Same rationale as the claim (type 2) and withdraw (type 3) guards above: while the
+        // first claim is unconfirmed, the seller's pbc_mktpay balance is not yet consumed, so every
+        // duplicate passes the balance/amount/signature checks; the first mined claim consumes the
+        // balance and every further duplicate in the same block then fails ("no pending balance")
+        // → the whole block is invalid → miner work wasted + duplicate stuck in the pool forever
+        // (incident of 08/09/2026: 72 duplicate claims from one seller → mass orphan blocks).
+        // Frontend-agnostic: protects ANY client (WebUI, Electron wallet, CLI, scripts).
+        {
+          bool dup_pending_mktpay_claim = false;
+          m_blockchain.for_all_txpool_txes([&](const crypto::hash &pooled_txid, const txpool_tx_meta_t &, const cryptonote::blobdata_ref *bd) {
+            if (!bd) return true;
+            cryptonote::transaction pooled_tx;
+            if (!cryptonote::parse_and_validate_tx_from_blob(*bd, pooled_tx))
+              return true;
+            crypto::public_key pooled_seller{};
+            uint64_t pooled_payout = 0;
+            std::string pooled_reason;
+            if (pbc_validate_market_payout_tx(pooled_tx, pooled_seller, pooled_payout, pooled_reason) == PBC_MARKET_PAYOUT_VALID
+                && pooled_seller == seller_pubkey)
+            {
+              dup_pending_mktpay_claim = true;
+              return false; // stop iteration
+            }
+            return true;
+          }, true, relay_category::all);
+
+          if (dup_pending_mktpay_claim)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected market_payout_claim tx=" << id
+              << " reason=claim_already_pending_for_seller seller=" << seller_pubkey);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+        }
+
         LOG_PRINT_L2("PBC mempool precheck: accepted market_payout_claim tx=" << id
           << " seller=" << seller_pubkey << " payout=" << mktpay_payout);
       }
@@ -808,6 +846,8 @@ namespace cryptonote
 
           if (has_lock && pooled_has_lock && cand_lock.deposit_id == pooled_lock.deposit_id)
           { conflict = true; return false; }
+          if (has_xfer && pooled_has_xfer && cand_xfer.deposit_id == pooled_xfer.deposit_id)
+          { conflict = true; return false; } // FIX-1b (08/09/2026): two pending transfers of the SAME deposit — the first mined transfer changes dep_rec.owner_key, the second's owner_sig then fails at block validation → invalid block (same poisoning class as the type-11 duplicate-claim incident).
           if (has_lock && pooled_has_xfer && cand_lock.deposit_id == pooled_xfer.deposit_id)
           { conflict = true; return false; }
           if (has_xfer && pooled_has_cancel && cand_xfer.lock_id == pooled_cancel.lock_id)
@@ -979,6 +1019,54 @@ namespace cryptonote
         }
 
         LOG_PRINT_L2("PBC mempool precheck: accepted inherit_request tx=" << id << " principal=" << tgt_f.principal_spend_pubkey);
+      }
+    }
+
+    // ── PBC mempool precheck: anti-double-submission for INHERIT_CANCEL (FIX-1c, 08/09/2026) ──
+    // A second INHERIT_CANCEL from the same principal in the same block fails at block validation
+    // ("CANCEL for missing principal record" — the first cancel removes the inherit record,
+    // blockchain.cpp) → the whole block is invalid. Same poisoning class as the type-11 duplicate
+    // claim incident; same POLICY-only guard (does NOT change block validity). The cancel is signed
+    // by the principal (tag 0x54 owner key), so the dedup key is the owner spend pubkey.
+    if (!kept_by_block)
+    {
+      std::vector<tx_extra_field> cancel_fields;
+      tx_extra_pbc_tx_type cancel_type{};
+      tx_extra_pbc_owner_key cancel_owner{};
+      if (parse_tx_extra(tx.extra, cancel_fields)
+          && find_tx_extra_field_by_type(cancel_fields, cancel_type)
+          && cancel_type.type == PBC_TX_TYPE_INHERIT_CANCEL
+          && find_tx_extra_field_by_type(cancel_fields, cancel_owner))
+      {
+        bool dup_pending_inherit_cancel = false;
+        m_blockchain.for_all_txpool_txes([&](const crypto::hash &pooled_txid, const txpool_tx_meta_t &, const cryptonote::blobdata_ref *bd) {
+          if (!bd) return true;
+          cryptonote::transaction pooled_tx;
+          if (!cryptonote::parse_and_validate_tx_from_blob(*bd, pooled_tx))
+            return true;
+          std::vector<tx_extra_field> pf;
+          tx_extra_pbc_tx_type pt{};
+          tx_extra_pbc_owner_key pk{};
+          if (parse_tx_extra(pooled_tx.extra, pf)
+              && find_tx_extra_field_by_type(pf, pt)
+              && pt.type == PBC_TX_TYPE_INHERIT_CANCEL
+              && find_tx_extra_field_by_type(pf, pk)
+              && pk.owner_spend_pubkey == cancel_owner.owner_spend_pubkey)
+          {
+            dup_pending_inherit_cancel = true;
+            return false; // stop iteration
+          }
+          return true;
+        }, true, relay_category::all);
+
+        if (dup_pending_inherit_cancel)
+        {
+          LOG_PRINT_L1("PBC mempool precheck: rejected inherit_cancel tx=" << id
+            << " reason=cancel_already_pending_for_principal principal=" << cancel_owner.owner_spend_pubkey);
+          tvc.m_verifivation_failed = true;
+          tvc.m_no_drop_offense = true;
+          return false;
+        }
       }
     }
 
