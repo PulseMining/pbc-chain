@@ -6508,7 +6508,12 @@ leave:
   std::vector<txpool_event> txpool_events;
 
   // this lambda returns relevant txs back to the mempool
-  auto return_txs_to_pool = [this, &txs, &txs_meta, &hf_version]()
+  // v8.2.19 FIX-C: txid of the tx whose failure rejected this block (set by the
+  // PBC failure paths below). The lambda does NOT return it to the pool — before the
+  // 04/09 return_txs_to_pool change, a rejected block at least purged the faulty tx
+  // from this node; since then it was re-added and re-tried forever (TROU 3).
+  crypto::hash pbc_poison_txid = crypto::null_hash;
+  auto return_txs_to_pool = [this, &txs, &txs_meta, &hf_version, &pbc_poison_txid]()
   {
     if (txs_meta.size() != txs.size())
     {
@@ -6525,6 +6530,12 @@ leave:
 
       transaction &tx = txs[i].first;
       const crypto::hash &txid = std::get<0>(txs_meta[i]);
+      // v8.2.19 FIX-C: never return the tx that failed validation to the pool
+      if (txid == pbc_poison_txid)
+      {
+        MGINFO("PBC: not returning failed-validation tx " << txid << " to the pool (poison purge)");
+        continue;
+      }
       const blobdata &tx_blob = txs[i].second;
       const size_t tx_weight = std::get<1>(txs_meta[i]);
 
@@ -7177,6 +7188,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7197,6 +7209,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7294,6 +7307,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7309,6 +7323,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7321,6 +7336,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7340,6 +7356,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7395,6 +7412,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7409,6 +7427,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7427,6 +7446,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7503,6 +7523,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7515,6 +7536,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -7533,6 +7555,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -8262,6 +8285,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8289,6 +8313,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -8311,6 +8336,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -8343,6 +8369,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -8436,6 +8463,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = claim_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8454,6 +8482,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = claim_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -8474,6 +8503,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = claim_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -8564,6 +8594,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = claim_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -8649,6 +8680,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8663,6 +8695,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8677,6 +8710,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8688,6 +8722,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8700,6 +8735,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8711,6 +8747,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8722,6 +8759,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8747,6 +8785,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -8767,6 +8806,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8782,6 +8822,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8795,6 +8836,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8838,6 +8880,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -8927,6 +8970,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = cancel_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8940,6 +8984,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = cancel_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8951,6 +8996,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = cancel_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8965,6 +9011,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = cancel_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -8977,6 +9024,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = cancel_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -8989,6 +9037,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = cancel_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9020,6 +9069,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9034,6 +9084,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9048,6 +9099,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9063,6 +9115,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9076,6 +9129,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9089,6 +9143,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9100,6 +9155,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9111,6 +9167,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9122,6 +9179,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9133,6 +9191,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9144,6 +9203,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9155,6 +9215,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9191,6 +9252,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = xfer_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9228,6 +9290,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = ask_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9243,6 +9306,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = ask_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9256,6 +9320,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = ask_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9270,6 +9335,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = ask_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9292,6 +9358,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = ask_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9407,6 +9474,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9422,6 +9490,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9433,6 +9502,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9444,6 +9514,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9459,6 +9530,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9471,6 +9543,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9487,6 +9560,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9500,6 +9574,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9530,6 +9605,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -9549,6 +9625,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -9563,6 +9640,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = p_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9703,6 +9781,7 @@ leave:
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
           // them out of every mempool on each rejected block — 04/09 incident)
+          pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
           return_txs_to_pool();
           bvc.m_verifivation_failed = true;
           return false;
@@ -9720,6 +9799,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9732,6 +9812,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9744,6 +9825,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9759,6 +9841,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -9776,6 +9859,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9794,6 +9878,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9809,6 +9894,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9831,6 +9917,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9847,6 +9934,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9861,6 +9949,7 @@ leave:
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
             // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
             return_txs_to_pool();
             bvc.m_verifivation_failed = true;
             return false;
@@ -9876,6 +9965,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -9889,6 +9979,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;
@@ -9908,6 +9999,7 @@ leave:
                 m_batch_success = false;
                 // PBC: return taken txs to the pool on block failure (was leaking
                 // them out of every mempool on each rejected block — 04/09 incident)
+                pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
                 return_txs_to_pool();
                 bvc.m_verifivation_failed = true;
                 return false;
@@ -9923,6 +10015,7 @@ leave:
               m_batch_success = false;
               // PBC: return taken txs to the pool on block failure (was leaking
               // them out of every mempool on each rejected block — 04/09 incident)
+              pbc_poison_txid = w_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
               return_txs_to_pool();
               bvc.m_verifivation_failed = true;
               return false;

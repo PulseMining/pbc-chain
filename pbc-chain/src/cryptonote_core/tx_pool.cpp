@@ -53,6 +53,8 @@
 #include "cryptonote_basic/cryptonote_format_utils.h"
 #include "crypto/duration.h"
 #include "pbc_deposits.h"
+#include "pbc_pools.h" // v8.2.19: pbc_get_tier_blocks (deposit precheck height re-validation)
+#include "pbc_collateral_lock.h" // v8.2.19: lock/cancel/transfer msg-hash helpers + lock record unpack
 #include "crypto/pqc/pqc_dilithium.h" // Problem 2: Dilithium co-signature size constant
 #include "pbc_inherit.h"
 
@@ -649,6 +651,31 @@ namespace cryptonote
           return false;
         }
 
+        // v8.2.19 FIX-A polish: mirror the block-apply vout sum checks (pure format, no
+        // state — sum(vout.amount) must equal the claimed payout, no overflow).
+        {
+          uint64_t sum_vout = 0;
+          for (const auto& o : tx.vout)
+          {
+            if (sum_vout > std::numeric_limits<uint64_t>::max() - o.amount)
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected market_payout_claim tx=" << id << " reason=vout_sum_overflow");
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+            sum_vout += o.amount;
+          }
+          if (sum_vout != mktpay_payout)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected market_payout_claim tx=" << id
+              << " reason=vout_sum_mismatch sum=" << sum_vout << " payout=" << mktpay_payout);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+        }
+
         // Verify pending balance exists.
         CRITICAL_REGION_LOCAL1(m_blockchain);
         uint64_t mktpay_balance = 0;
@@ -800,12 +827,20 @@ namespace cryptonote
           tvc.m_no_drop_offense = true;
           return false;
         }
-        std::string msg(PBC_TRANSFER_OWNER_MSG_PREFIX);
-        msg.append(reinterpret_cast<const char*>(&xfer_field.deposit_id), sizeof(xfer_field.deposit_id));
-        msg.append(reinterpret_cast<const char*>(&xfer_field.new_owner_spend_pubkey), sizeof(xfer_field.new_owner_spend_pubkey));
-        const crypto::hash msg_hash = crypto::cn_fast_hash(msg.data(), msg.size());
+        // v8.2.19 FIX-A: verify against the CONSENSUS key — the wallet signs with
+        // pbc_build_transfer_deposit_msg_hash ("PBC_TRANSFER_DEPOSIT_V2" + deposit_id +
+        // new_owner + lock_id + expected indices, wallet2.cpp, pbc_collateral_lock.h:90)
+        // and block validation checks the same (blockchain.cpp). The previous precheck
+        // built a V1 message ("PBC_TRANSFER_DEPOSIT_V1" + deposit_id + new_owner only)
+        // which NEVER matches a legitimately signed transfer → every transfer sent via
+        // RPC was wrongly rejected here. Aligned on the consensus hash.
+        const crypto::hash msg_hash = pbc_build_transfer_deposit_msg_hash(
+            xfer_field.deposit_id, xfer_field.new_owner_spend_pubkey, xfer_field.lock_id,
+            xfer_field.expected_dep_idx, xfer_field.expected_fee_idx);
         if (!crypto::check_signature(msg_hash, dep_rec.owner_key, sig_field.sig))
         {
+          LOG_PRINT_L1("PBC mempool precheck: rejected transfer_deposit tx=" << id
+            << " reason=owner_sig_invalid deposit=" << xfer_field.deposit_id);
           tvc.m_verifivation_failed = true;
           tvc.m_no_drop_offense = true;
           return false;
@@ -819,9 +854,23 @@ namespace cryptonote
         tx_extra_pbc_transfer_deposit cand_xfer{};
         tx_extra_pbc_lock_collateral cand_lock{};
         tx_extra_pbc_cancel_lock cand_cancel{};
+        // v8.2.19 FIX-D: also derive the deposit id from the CLAIM (0x52) and
+        // TERM_WITHDRAW (0x53) tags — previously only transfer/lock fields were read,
+        // so cand_dep/pooled_dep was always null_hash for claims and withdraws and the
+        // transfer_claim / transfer_withdraw / transfer_inherit branches below were
+        // DEAD CODE (the block-apply "transfer conflicts with withdraw in same block"
+        // rejection could never be blocked at admission).
+        tx_extra_pbc_claim_info cand_claim{};
+        tx_extra_pbc_withdraw_info cand_withdraw{};
         const bool has_xfer = find_tx_extra_field_by_type(extra_fields, cand_xfer);
         const bool has_lock = find_tx_extra_field_by_type(extra_fields, cand_lock);
         const bool has_cancel = find_tx_extra_field_by_type(extra_fields, cand_cancel);
+        const bool has_claim = find_tx_extra_field_by_type(extra_fields, cand_claim);
+        const bool has_withdraw = find_tx_extra_field_by_type(extra_fields, cand_withdraw);
+        const crypto::hash cand_dep = has_xfer ? cand_xfer.deposit_id
+          : (has_lock ? cand_lock.deposit_id
+          : (has_claim ? cand_claim.deposit_id
+          : (has_withdraw ? cand_withdraw.deposit_id : crypto::null_hash)));
 
         bool conflict = false;
         m_blockchain.for_all_txpool_txes([&](const crypto::hash &pooled_txid, const txpool_tx_meta_t &, const cryptonote::blobdata_ref *bd) {
@@ -837,12 +886,17 @@ namespace cryptonote
           tx_extra_pbc_transfer_deposit pooled_xfer{};
           tx_extra_pbc_lock_collateral pooled_lock{};
           tx_extra_pbc_cancel_lock pooled_cancel{};
+          tx_extra_pbc_claim_info pooled_claim{};
+          tx_extra_pbc_withdraw_info pooled_withdraw{};
           const bool pooled_has_xfer = find_tx_extra_field_by_type(pooled_fields, pooled_xfer);
           const bool pooled_has_lock = find_tx_extra_field_by_type(pooled_fields, pooled_lock);
           const bool pooled_has_cancel = find_tx_extra_field_by_type(pooled_fields, pooled_cancel);
-
-          const crypto::hash cand_dep = has_xfer ? cand_xfer.deposit_id : (has_lock ? cand_lock.deposit_id : crypto::null_hash);
-          const crypto::hash pooled_dep = pooled_has_xfer ? pooled_xfer.deposit_id : (pooled_has_lock ? pooled_lock.deposit_id : crypto::null_hash);
+          const bool pooled_has_claim = find_tx_extra_field_by_type(pooled_fields, pooled_claim);
+          const bool pooled_has_withdraw = find_tx_extra_field_by_type(pooled_fields, pooled_withdraw);
+          const crypto::hash pooled_dep = pooled_has_xfer ? pooled_xfer.deposit_id
+            : (pooled_has_lock ? pooled_lock.deposit_id
+            : (pooled_has_claim ? pooled_claim.deposit_id
+            : (pooled_has_withdraw ? pooled_withdraw.deposit_id : crypto::null_hash)));
 
           if (has_lock && pooled_has_lock && cand_lock.deposit_id == pooled_lock.deposit_id)
           { conflict = true; return false; }
@@ -875,7 +929,10 @@ namespace cryptonote
         }, true, relay_category::all);
 
         if (conflict)
-        { tvc.m_verifivation_failed = true; tvc.m_no_drop_offense = true; return false; }
+        {
+          LOG_PRINT_L1("PBC mempool precheck: rejected tx=" << id << " reason=pool_conflict (market/deposit conflict with a pooled tx)");
+          tvc.m_verifivation_failed = true; tvc.m_no_drop_offense = true; return false;
+        }
       }
     }
 
@@ -905,11 +962,18 @@ namespace cryptonote
         }
 
         bool dep_ok = false;
+        bool dep_onchain = false;
+        pbc_deposit_record ask_dep_rec{};
         {
           CRITICAL_REGION_LOCAL1(m_blockchain);
           uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
           size_t dep_sz = PBC_DEPOSIT_RECORD_PACKED_SIZE;
           dep_ok = m_blockchain.get_db().get_pbc_deposit(ask_f.deposit_id, dep_buf, dep_sz);
+          if (dep_ok)
+          {
+            dep_onchain = true;
+            pbc_unpack_deposit_record(dep_buf, dep_sz, ask_dep_rec);
+          }
         }
 
         if (!dep_ok)
@@ -942,6 +1006,54 @@ namespace cryptonote
           tvc.m_verifivation_failed = true;
           tvc.m_no_drop_offense = true;
           return false;
+        }
+
+        // v8.2.19 FIX-A: mirror the remaining block-apply checks for MARKET_ASK.
+        // seller_sig is structural (no chain state) → always verified. Owner match and
+        // maturity need the on-chain record → verified only when the deposit is committed
+        // (when it is only pending in this pool, they are left to consensus — documented).
+        {
+          if (dep_onchain)
+          {
+            if (ask_dep_rec.owner_key != ask_f.seller_pubkey)
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected market_ask tx=" << id
+                << " reason=seller_not_owner deposit=" << ask_f.deposit_id);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+            // Maturity: once unlock_height <= current height the deposit is mature
+            // FOREVER (height only grows) → rejecting here can never be a false reject.
+            const uint64_t current_height = m_blockchain.get_current_blockchain_height();
+            if (ask_f.ask_price > 0 && ask_dep_rec.unlock_height <= current_height)
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected market_ask tx=" << id
+                << " reason=deposit_mature deposit=" << ask_f.deposit_id
+                << " unlock_height=" << ask_dep_rec.unlock_height << " current=" << current_height);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+          }
+          // seller_sig over H(PBC_MARKET_ASK_V1 || deposit_id || ask_price_le8 || seller_pubkey)
+          // — byte-identical reconstruction of the consensus message (blockchain.cpp).
+          uint8_t price_le8[8];
+          const uint64_t p = ask_f.ask_price;
+          for (int b = 0; b < 8; ++b) price_le8[b] = (p >> (b * 8)) & 0xFF;
+          std::string msg(PBC_MARKET_ASK_MSG_PREFIX);
+          msg.append(reinterpret_cast<const char*>(ask_f.deposit_id.data), sizeof(ask_f.deposit_id));
+          msg.append(reinterpret_cast<const char*>(price_le8), 8);
+          msg.append(reinterpret_cast<const char*>(&ask_f.seller_pubkey), sizeof(ask_f.seller_pubkey));
+          const crypto::hash msg_hash = crypto::cn_fast_hash(msg.data(), msg.size());
+          if (!crypto::check_signature(msg_hash, ask_f.seller_pubkey, ask_f.seller_sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected market_ask tx=" << id
+              << " reason=seller_sig_invalid deposit=" << ask_f.deposit_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
         }
 
         LOG_PRINT_L2("PBC mempool precheck: accepted market_ask tx=" << id << " deposit=" << ask_f.deposit_id);
@@ -977,11 +1089,18 @@ namespace cryptonote
         }
 
         bool rec_ok = false;
+        bool rec_onchain = false;
+        pbc_inherit_record req_rec{};
         {
           CRITICAL_REGION_LOCAL1(m_blockchain);
           uint8_t rec_buf[PBC_INHERIT_RECORD_PACKED_SIZE];
           size_t rec_sz = PBC_INHERIT_RECORD_PACKED_SIZE;
           rec_ok = m_blockchain.get_db().get_pbc_inherit_record(tgt_f.principal_spend_pubkey, rec_buf, rec_sz);
+          if (rec_ok)
+          {
+            rec_onchain = pbc_unpack_inherit_record(rec_buf, rec_sz, req_rec);
+            rec_ok = rec_onchain;
+          }
         }
 
         if (!rec_ok)
@@ -1018,6 +1137,45 @@ namespace cryptonote
           return false;
         }
 
+        // v8.2.19 FIX-A: mirror the remaining block-apply checks for INHERIT_REQUEST.
+        // owner_key (0x54) + owner_sig (0x55) presence and the signature over
+        // H(PBC_INHERIT_REQUEST_V1 || heir || principal) are structural → always verified.
+        // The heir match needs the committed record → verified only when it is on-chain;
+        // when the SETUP is only pending in this pool, the heir cannot be known here and
+        // the check is left to the block template / consensus (documented in the dossier).
+        {
+          tx_extra_pbc_owner_key req_owner{};
+          tx_extra_pbc_owner_sig req_sig{};
+          if (!find_tx_extra_field_by_type(req_fields, req_owner) || !find_tx_extra_field_by_type(req_fields, req_sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_request tx=" << id << " reason=owner_fields_missing");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (rec_onchain && req_owner.owner_spend_pubkey != req_rec.heir.m_spend_public_key)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_request tx=" << id
+              << " reason=signer_not_heir principal=" << tgt_f.principal_spend_pubkey);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          std::string payload;
+          payload.append(reinterpret_cast<const char*>(&req_owner.owner_spend_pubkey), sizeof(crypto::public_key));
+          payload.append(reinterpret_cast<const char*>(&tgt_f.principal_spend_pubkey), sizeof(crypto::public_key));
+          const std::string msg = std::string(PBC_INHERIT_REQUEST_MSG_PREFIX) + payload;
+          const crypto::hash msg_hash = crypto::cn_fast_hash(msg.data(), msg.size());
+          if (!crypto::check_signature(msg_hash, req_owner.owner_spend_pubkey, req_sig.sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_request tx=" << id
+              << " reason=owner_sig_invalid principal=" << tgt_f.principal_spend_pubkey);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+        }
+
         LOG_PRINT_L2("PBC mempool precheck: accepted inherit_request tx=" << id << " principal=" << tgt_f.principal_spend_pubkey);
       }
     }
@@ -1038,6 +1196,47 @@ namespace cryptonote
           && cancel_type.type == PBC_TX_TYPE_INHERIT_CANCEL
           && find_tx_extra_field_by_type(cancel_fields, cancel_owner))
       {
+        // v8.2.19 FIX-A: mirror the block-apply checks for INHERIT_CANCEL (mempool
+        // POLICY, not consensus — does NOT change block validity): cancel field (0x59)
+        // + owner_sig (0x55) present, principal record exists, owner_sig valid over
+        // H(PBC_INHERIT_CANCEL_V1 || principal). Soft-reject: no peer penalty.
+        tx_extra_pbc_inherit_cancel cancel_marker{};
+        tx_extra_pbc_owner_sig cancel_sig{};
+        if (!find_tx_extra_field_by_type(cancel_fields, cancel_marker) || !find_tx_extra_field_by_type(cancel_fields, cancel_sig))
+        {
+          LOG_PRINT_L1("PBC mempool precheck: rejected inherit_cancel tx=" << id << " reason=fields_missing");
+          tvc.m_verifivation_failed = true;
+          tvc.m_no_drop_offense = true;
+          return false;
+        }
+        {
+          CRITICAL_REGION_LOCAL1(m_blockchain);
+          uint8_t rec_buf[PBC_INHERIT_RECORD_PACKED_SIZE];
+          size_t rec_sz = PBC_INHERIT_RECORD_PACKED_SIZE;
+          if (!m_blockchain.get_db().get_pbc_inherit_record(cancel_owner.owner_spend_pubkey, rec_buf, rec_sz))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_cancel tx=" << id
+              << " reason=principal_record_not_found principal=" << cancel_owner.owner_spend_pubkey);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+        }
+        {
+          std::string payload;
+          payload.append(reinterpret_cast<const char*>(&cancel_owner.owner_spend_pubkey), sizeof(crypto::public_key));
+          const std::string msg = std::string(PBC_INHERIT_CANCEL_MSG_PREFIX) + payload;
+          const crypto::hash msg_hash = crypto::cn_fast_hash(msg.data(), msg.size());
+          if (!crypto::check_signature(msg_hash, cancel_owner.owner_spend_pubkey, cancel_sig.sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_cancel tx=" << id
+              << " reason=owner_sig_invalid principal=" << cancel_owner.owner_spend_pubkey);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+        }
+
         bool dup_pending_inherit_cancel = false;
         m_blockchain.for_all_txpool_txes([&](const crypto::hash &pooled_txid, const txpool_tx_meta_t &, const cryptonote::blobdata_ref *bd) {
           if (!bd) return true;
@@ -1075,17 +1274,63 @@ namespace cryptonote
     // Prevents griefing where a miner/pool includes a TX that causes block rejection.
     // Read-only LMDB: iterates existing deposits, extracts vout[0].key, counts per key.
     // Soft-reject: m_no_drop_offense = true → don't penalize peer.
-    if (!kept_by_block && tx.unlock_time != 0)
+    // v8.2.19 FIX-A: also mirror the block-apply INVALID_DEPOSIT and INVALID_DEPOSIT_RCT
+    // (TD3) rejections (blockchain.cpp) — previously INVALID was explicitly left to
+    // consensus here, so any ordinary TX carrying a deposit tag with invalid content was
+    // admitted, relayed, and poisoned every template. Runs on EVERY tx (not gated on
+    // unlock_time anymore: an attacker could set unlock_time=0 to skip this precheck —
+    // such a deposit fails TD3 at block apply anyway).
+    if (!kept_by_block)
     {
-      // Potential deposit TX (unlock_time != 0 is the hallmark of a term deposit).
-      // Use pbc_validate_deposit_tx to confirm structurally valid deposit format.
       pbc_deposit_record dep_rec_check;
       std::string dep_fail_reason;
       const uint64_t current_height = m_blockchain.get_current_blockchain_height();
       pbc_deposit_result dep_res = pbc_validate_deposit_tx(tx, current_height, dep_rec_check, dep_fail_reason);
 
-      if (dep_res == PBC_DEPOSIT_VALID)
+      if (dep_res == PBC_DEPOSIT_INVALID)
       {
+        // Height-dependent checks 5/5b (unlock window vs block_height) can resolve
+        // themselves as the chain grows (PBC_DEPOSIT_UNLOCK_MAX_MARGIN = 256 blocks):
+        // re-validate at the height where the declared unlock_height is exactly the tier
+        // minimum — if the TX is still invalid there, it can never become valid and is
+        // rejected; otherwise it is left to consensus (never a false reject).
+        bool still_invalid = true;
+        {
+          std::vector<tx_extra_field> d_fields;
+          tx_extra_pbc_deposit_info d_info{};
+          if (parse_tx_extra(tx.extra, d_fields) && find_tx_extra_field_by_type(d_fields, d_info))
+          {
+            const uint64_t tier_blocks = pbc_get_tier_blocks(d_info.tier);
+            const uint64_t h_prime = (d_info.unlock_height > tier_blocks) ? (d_info.unlock_height - tier_blocks) : 0;
+            pbc_deposit_record rec2{};
+            std::string reason2;
+            still_invalid = (pbc_validate_deposit_tx(tx, h_prime, rec2, reason2) == PBC_DEPOSIT_INVALID);
+          }
+        }
+        if (still_invalid)
+        {
+          LOG_PRINT_L1("PBC mempool deposit precheck: rejected tx=" << id
+            << " reason=deposit_invalid (" << dep_fail_reason << ")");
+          tvc.m_verifivation_failed = true;
+          tvc.m_no_drop_offense = true;
+          return false;
+        }
+      }
+      else if (dep_res == PBC_DEPOSIT_VALID)
+      {
+        // TD-3 mirror: RCT commitment structure (pure format, no state, no height).
+        {
+          std::string rct_fail_reason;
+          if (!pbc_verify_term_deposit_rct_simple(tx, dep_rec_check, rct_fail_reason))
+          {
+            LOG_PRINT_L1("PBC mempool deposit precheck: rejected tx=" << id
+              << " reason=deposit_rct_invalid (" << rct_fail_reason << ")");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+        }
+
         // TD-8: owner_key guaranteed valid by pbc_validate_deposit_tx() Check 7
         const crypto::public_key& dep_out_key = dep_rec_check.owner_key;
 
@@ -1138,8 +1383,318 @@ namespace cryptonote
           << " active_count=" << active_count
           << " max=" << PBC_MAX_DEPOSITS_PER_ADDR);
       }
-      // PBC_DEPOSIT_NOT_APPLICABLE or PBC_DEPOSIT_INVALID: not our concern here,
-      // consensus will handle invalid deposits at block validation.
+      // PBC_DEPOSIT_NOT_APPLICABLE: not a deposit TX, continue normally.
+      // PBC_DEPOSIT_INVALID left after the height re-validation above: a TX whose only
+      // failure is the (self-resolving) unlock upper bound — left to consensus, never
+      // falsely rejected here.
+    }
+
+    // ── PBC mempool prechecks v8.2.19 (FIX-A): admission mirrors of the block-apply
+    // consensus checks for INHERIT_SETUP (4), INHERIT_TESTAMENT (13), LOCK_COLLATERAL (8)
+    // and CANCEL_LOCK (9) — mempool POLICY, not consensus; they do NOT change block
+    // validity. Every check replicated here is STABLE between broadcast and inclusion
+    // (pure format, signature against the consensus key, or chain state that can only
+    // make the failure permanent). Conditions that can legitimately change before
+    // inclusion (ask price, lock expiry upper bound, involuntary-cancel timing) are
+    // deliberately left to consensus and documented in the dossier. Soft-reject:
+    // m_no_drop_offense = true → don't penalize peer.
+    if (!kept_by_block)
+    {
+      std::vector<tx_extra_field> fa_fields;
+      tx_extra_pbc_tx_type fa_type{};
+      const bool fa_parsed = parse_tx_extra(tx.extra, fa_fields);
+      if (fa_parsed && find_tx_extra_field_by_type(fa_fields, fa_type))
+      {
+        // Replicated logic of the file-static helpers pbc_tx_has_output_amount /
+        // pbc_tx_has_market_payout_amount (blockchain.cpp:340-360 — not exported).
+        auto fa_has_output_amount = [](const cryptonote::transaction &t, uint64_t amount) -> bool {
+          uint64_t sum = 0;
+          for (const auto &o : t.vout)
+          {
+            if (o.amount == amount) return true;
+            if (sum <= std::numeric_limits<uint64_t>::max() - o.amount)
+              sum += o.amount;
+          }
+          return sum == amount;
+        };
+        auto fa_has_market_payout_amount = [&](const cryptonote::transaction &t, uint64_t amount) -> bool {
+          if (t.vout.empty()) return false;
+          if (t.rct_signatures.type == rct::RCTTypeNull) return fa_has_output_amount(t, amount);
+          return true;
+        };
+        const uint64_t fa_height = m_blockchain.get_current_blockchain_height();
+
+        // ── Type 4: INHERIT_SETUP — structure + owner_sig (a SETUP creates/overwrites
+        // the record, so NO existence check — mirror of blockchain.cpp SETUP section).
+        if (fa_type.type == PBC_TX_TYPE_INHERIT_SETUP)
+        {
+          tx_extra_pbc_inherit_setup setup_f{};
+          tx_extra_pbc_owner_key setup_owner{};
+          tx_extra_pbc_owner_sig setup_sig{};
+          if (!find_tx_extra_field_by_type(fa_fields, setup_f)
+              || !find_tx_extra_field_by_type(fa_fields, setup_owner)
+              || !find_tx_extra_field_by_type(fa_fields, setup_sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_setup tx=" << id << " reason=malformed_setup");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          std::string payload;
+          payload.append(reinterpret_cast<const char*>(&setup_owner.owner_spend_pubkey), sizeof(crypto::public_key));
+          payload.append(reinterpret_cast<const char*>(&setup_f.heir.m_spend_public_key), sizeof(crypto::public_key));
+          payload.append(reinterpret_cast<const char*>(&setup_f.heir.m_view_public_key), sizeof(crypto::public_key));
+          const std::string msg = std::string(PBC_INHERIT_SETUP_MSG_PREFIX) + payload;
+          const crypto::hash msg_hash = crypto::cn_fast_hash(msg.data(), msg.size());
+          if (!crypto::check_signature(msg_hash, setup_owner.owner_spend_pubkey, setup_sig.sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_setup tx=" << id
+              << " reason=owner_sig_invalid principal=" << setup_owner.owner_spend_pubkey);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          LOG_PRINT_L2("PBC mempool precheck: accepted inherit_setup tx=" << id);
+        }
+
+        // ── Type 13: INHERIT_TESTAMENT — structure + principal==owner + owner_sig over
+        // H(PBC_INHERIT_TESTAMENT_V1 || principal || seq || H(testament)). The sequence
+        // rule (seq > stored seq) is NOT a block error (stale carriers are ignored
+        // cleanly) → deliberately NOT mirrored (would falsely reject a legit late carrier).
+        if (fa_type.type == PBC_TX_TYPE_INHERIT_TESTAMENT)
+        {
+          tx_extra_pbc_inherit_testament tst_f{};
+          tx_extra_pbc_owner_key tst_owner{};
+          tx_extra_pbc_owner_sig tst_sig{};
+          if (!find_tx_extra_field_by_type(fa_fields, tst_f)
+              || !find_tx_extra_field_by_type(fa_fields, tst_owner)
+              || !find_tx_extra_field_by_type(fa_fields, tst_sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_testament tx=" << id << " reason=malformed_testament");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (tst_f.principal_spend_pubkey != tst_owner.owner_spend_pubkey)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_testament tx=" << id << " reason=principal_owner_mismatch");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          const crypto::hash th = crypto::cn_fast_hash(tst_f.testament.data(), tst_f.testament.size());
+          std::string payload;
+          payload.append(reinterpret_cast<const char*>(&tst_owner.owner_spend_pubkey), sizeof(crypto::public_key));
+          payload.append(reinterpret_cast<const char*>(&tst_f.seq), sizeof(tst_f.seq));
+          payload.append(reinterpret_cast<const char*>(&th), sizeof(crypto::hash));
+          const std::string msg = std::string(PBC_INHERIT_TESTAMENT_MSG_PREFIX) + payload;
+          const crypto::hash msg_hash = crypto::cn_fast_hash(msg.data(), msg.size());
+          if (!crypto::check_signature(msg_hash, tst_owner.owner_spend_pubkey, tst_sig.sig))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected inherit_testament tx=" << id
+              << " reason=owner_sig_invalid principal=" << tst_owner.owner_spend_pubkey);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          LOG_PRINT_L2("PBC mempool precheck: accepted inherit_testament tx=" << id);
+        }
+
+        // ── Type 8: LOCK_COLLATERAL — mirror of the block-apply LOCK section, stable
+        // conditions only. Left to consensus (documented): amount vs ask price (the ask
+        // price can change between broadcast and inclusion) and the expiry UPPER bound
+        // (resolves itself as the chain grows).
+        if (fa_type.type == PBC_TX_TYPE_LOCK_COLLATERAL)
+        {
+          tx_extra_pbc_lock_collateral lock_f{};
+          if (!find_tx_extra_field_by_type(fa_fields, lock_f))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id << " reason=lock_field_missing");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+
+          bool lock_dep_onchain = false;
+          pbc_deposit_record lock_dep_rec{};
+          {
+            CRITICAL_REGION_LOCAL1(m_blockchain);
+            uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+            size_t dep_sz = PBC_DEPOSIT_RECORD_PACKED_SIZE;
+            lock_dep_onchain = m_blockchain.get_db().get_pbc_deposit(lock_f.deposit_id, dep_buf, dep_sz);
+            if (lock_dep_onchain)
+              pbc_unpack_deposit_record(dep_buf, dep_sz, lock_dep_rec);
+          }
+          if (!lock_dep_onchain)
+          {
+            // No pool fallback (correction Stef, v8.2.19): block validation requires
+            // dep_rec.created_height < block_height (blockchain.cpp) — a deposit created
+            // in the SAME block has created_height == block_height, so a lock can NEVER
+            // validate alongside its own deposit. Reject net.
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+              << " reason=deposit_not_found deposit=" << lock_f.deposit_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (lock_dep_onchain)
+          {
+            if (!(lock_dep_rec.created_height < fa_height))
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+                << " reason=deposit_not_yet_created deposit=" << lock_f.deposit_id);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+            if (lock_dep_rec.owner_key != lock_f.seller_pubkey)
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+                << " reason=seller_mismatch deposit=" << lock_f.deposit_id);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+            crypto::hash existing_lock_id = crypto::null_hash;
+            CRITICAL_REGION_LOCAL1(m_blockchain);
+            if (m_blockchain.get_db().get_active_pbc_collateral_lock_for_deposit(lock_f.deposit_id, existing_lock_id))
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+                << " reason=deposit_already_locked deposit=" << lock_f.deposit_id << " existing=" << existing_lock_id);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+            uint8_t inh_buf[PBC_INHERIT_RECORD_PACKED_SIZE];
+            size_t inh_sz = PBC_INHERIT_RECORD_PACKED_SIZE;
+            pbc_inherit_record inh_rec{};
+            if (m_blockchain.get_db().get_pbc_inherit_record(lock_dep_rec.owner_key, inh_buf, inh_sz)
+                && pbc_unpack_inherit_record(inh_buf, inh_sz, inh_rec) && inh_rec.request_active)
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+                << " reason=inheritance_active deposit=" << lock_f.deposit_id);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+          }
+          if (lock_f.buyer_pubkey == lock_f.seller_pubkey)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id << " reason=buyer_equals_seller");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (!fa_has_market_payout_amount(tx, lock_f.amount))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+              << " reason=backing_output_missing amount=" << lock_f.amount);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          // Expiry LOWER bound only: expiry < current + PBC_LOCK_MIN_DURATION can never
+          // become valid again (height only grows) → safe to reject permanently.
+          if (lock_f.expiry_height < fa_height + PBC_LOCK_MIN_DURATION)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+              << " reason=expiry_too_soon expiry=" << lock_f.expiry_height << " current=" << fa_height);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          const crypto::hash lock_msg_hash = pbc_build_lock_msg_hash(lock_f.deposit_id, lock_f.buyer_pubkey,
+              lock_f.seller_pubkey, lock_f.amount, lock_f.expiry_height, lock_f.expected_dep_idx, lock_f.expected_fee_idx);
+          if (!crypto::check_signature(lock_msg_hash, lock_f.buyer_pubkey, lock_f.buyer_signature))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id << " reason=buyer_sig_invalid");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          LOG_PRINT_L2("PBC mempool precheck: accepted lock_collateral tx=" << id << " deposit=" << lock_f.deposit_id);
+        }
+
+        // ── Type 9: CANCEL_LOCK — mirror of the block-apply CANCEL_LOCK section, stable
+        // conditions only + involuntary timing (monotone in height — correction Stef).
+        if (fa_type.type == PBC_TX_TYPE_CANCEL_LOCK)
+        {
+          tx_extra_pbc_cancel_lock cancel_f{};
+          if (!find_tx_extra_field_by_type(fa_fields, cancel_f))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected cancel_lock tx=" << id << " reason=cancel_field_missing");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          collateral_lock_record cancel_rec{};
+          bool cancel_lock_found = false;
+          {
+            CRITICAL_REGION_LOCAL1(m_blockchain);
+            uint8_t lbuf[PBC_COLLATERAL_LOCK_RECORD_PACKED_SIZE];
+            size_t lsz = sizeof(lbuf);
+            cancel_lock_found = m_blockchain.get_db().get_pbc_collateral_lock(cancel_f.lock_id, lbuf, lsz)
+                && pbc_unpack_collateral_lock_record(lbuf, lsz, cancel_rec);
+          }
+          if (!cancel_lock_found)
+          {
+            // No pool fallback: the block-apply read is through the same snapshot
+            // discipline as INHERIT_REQUEST — a lock only pending in the pool is NOT
+            // visible to block validation, so the cancel can never validate.
+            LOG_PRINT_L1("PBC mempool precheck: rejected cancel_lock tx=" << id
+              << " reason=lock_not_found lock=" << cancel_f.lock_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (cancel_rec.status != PBC_COLLATERAL_LOCK_ACTIVE)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected cancel_lock tx=" << id
+              << " reason=lock_not_active lock=" << cancel_f.lock_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (cancel_f.is_voluntary)
+          {
+            const crypto::hash cancel_msg_hash = pbc_build_cancel_lock_msg_hash(cancel_f.lock_id);
+            if (!crypto::check_signature(cancel_msg_hash, cancel_rec.buyer_pubkey, cancel_f.canceller_sig))
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected cancel_lock tx=" << id
+                << " reason=canceller_sig_invalid lock=" << cancel_f.lock_id);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+          }
+          else
+          {
+            // Involuntary cancel (correction Stef, v8.2.19): block validation rejects it
+            // while block_height <= rec.expiry_height (blockchain.cpp) — the condition
+            // is monotone in height, so rejecting an early involuntary cancel here can
+            // never be a false reject of a tx valid now (the author re-broadcasts after
+            // expiry). Reject if current_height < expiry (== expiry is valid next block).
+            if (fa_height < cancel_rec.expiry_height)
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected cancel_lock tx=" << id
+                << " reason=cancel_too_early lock=" << cancel_f.lock_id
+                << " expiry=" << cancel_rec.expiry_height << " current=" << fa_height);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+          }
+          if (!fa_has_market_payout_amount(tx, cancel_rec.amount))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected cancel_lock tx=" << id
+              << " reason=refund_output_missing amount=" << cancel_rec.amount);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          LOG_PRINT_L2("PBC mempool precheck: accepted cancel_lock tx=" << id << " lock=" << cancel_f.lock_id);
+        }
+      }
     }
 
     // if the transaction came from a block popped from the chain,
@@ -2760,6 +3315,324 @@ namespace cryptonote
             MGINFO("PBC INHERIT: REQUEST " << sorted_it->second
                   << " skipped in block template — principal record not committed on-chain yet");
             continue;
+          }
+        }
+
+        // v8.2.19 FIX-B: re-validate STALE state for the fee=0 protocol txs (types
+        // 2/3/11) at template time — the admission prechecks verify chain state at
+        // broadcast, but that state can legitimately change afterwards (a competing
+        // claim mined on another node, a withdraw whose rewards were already paid).
+        // A stale tx included in a template makes the WHOLE block invalid (TROU 2 of
+        // the v8.2.19 dossier: cross-node divergence lives up to 3 days in the pool).
+        // Same lazy-parse caveat as above: parse the blob ourselves, never trust `tx`.
+        // Skip WITHOUT removing the tx from the pool (it is purged by expiry or by the
+        // post-block revalidation). Miner policy only — block validation is unchanged.
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_MARKET_PAYOUT_CLAIM)
+        {
+          cryptonote::transaction tpl_full_tx;
+          crypto::public_key tpl_seller{};
+          uint64_t tpl_payout = 0;
+          std::string tpl_reason;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx)
+              && pbc_validate_market_payout_tx(tpl_full_tx, tpl_seller, tpl_payout, tpl_reason) == PBC_MARKET_PAYOUT_VALID)
+          {
+            uint64_t bal = 0;
+            if (!m_blockchain.get_db().get_property_uint64(pbc_mktpay_key(tpl_seller), bal) || bal == 0 || bal != tpl_payout)
+            {
+              MGINFO("PBC MKTPAY: claim " << sorted_it->second
+                    << " skipped in block template — stale pending balance (claimed=" << tpl_payout
+                    << " stored=" << bal << " seller=" << tpl_seller << ")");
+              continue;
+            }
+          }
+        }
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_TERM_WITHDRAW)
+        {
+          cryptonote::transaction tpl_full_tx;
+          crypto::hash wdep{};
+          uint64_t wpayout = 0;
+          uint8_t wkind = 0;
+          std::string wreason;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx)
+              && pbc_validate_withdraw_tx(tpl_full_tx, wdep, wpayout, wkind, wreason) == PBC_WITHDRAW_VALID)
+          {
+            const uint64_t tpl_h = m_blockchain.get_current_blockchain_height();
+            uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+            size_t dep_sz = sizeof(dep_buf);
+            bool stale = false;
+            std::string why;
+            pbc_deposit_record wrec{};
+            if (!m_blockchain.get_db().get_pbc_deposit(wdep, dep_buf, dep_sz))
+            { stale = true; why = "deposit_not_found"; }
+            else
+            {
+              pbc_unpack_deposit_record(dep_buf, dep_sz, wrec);
+              if (!(wrec.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
+              else if (wrec.last_claim_height == 0 || !(wrec.last_claim_height < tpl_h)) { stale = true; why = "no_prior_claim_in_earlier_block"; }
+              else if (wrec.accumulated_reward == 0) { stale = true; why = "zero_accumulated_reward"; }
+              else if (wpayout != wrec.accumulated_reward) { stale = true; why = "payout_mismatch"; }
+            }
+            if (stale)
+            {
+              MGINFO("PBC PF: TERM_WITHDRAW " << sorted_it->second
+                    << " skipped in block template — stale deposit state (" << why
+                    << ") deposit=" << wdep);
+              continue;
+            }
+          }
+        }
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_CLAIM)
+        {
+          cryptonote::transaction tpl_full_tx;
+          crypto::hash cdep{};
+          std::string creason;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx)
+              && pbc_validate_claim_tx(tpl_full_tx, cdep, creason) == PBC_CLAIM_VALID)
+          {
+            const uint64_t tpl_h = m_blockchain.get_current_blockchain_height();
+            uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+            size_t dep_sz = sizeof(dep_buf);
+            bool stale = false;
+            std::string why;
+            pbc_deposit_record crec{};
+            if (!m_blockchain.get_db().get_pbc_deposit(cdep, dep_buf, dep_sz))
+            { stale = true; why = "deposit_not_found"; }
+            else
+            {
+              pbc_unpack_deposit_record(dep_buf, dep_sz, crec);
+              if (!(crec.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
+              else if (crec.last_claim_height == tpl_h) { stale = true; why = "already_claimed_this_height"; }
+              else
+              {
+                // Provably-zero reward (mirror of the admission guard): for a NON-EXPIRED
+                // deposit the effective indices equal the global indices — if they already
+                // match, accrual since the last action is zero and block validation rejects
+                // ("Zero reward → reject"). Expired deposits use frozen indices → left to
+                // consensus (never a false skip).
+                const pbc_pool_state& ps = m_blockchain.get_pbc_pool_state();
+                if (crec.unlock_height > tpl_h
+                    && crec.deposit_entry_index == ps.global_deposit_index
+                    && crec.fee_entry_index == ps.global_fee_index)
+                { stale = true; why = "zero_accrual_since_last_claim"; }
+              }
+            }
+            if (stale)
+            {
+              MGINFO("PBC TD-5: CLAIM " << sorted_it->second
+                    << " skipped in block template — stale deposit state (" << why
+                    << ") deposit=" << cdep);
+              continue;
+            }
+          }
+        }
+
+        // v8.2.19 FIX-B (extension, correction Stef): same stale-state revalidation for
+        // the market types 7/8/9/10 — covers the height-dependent conditions that were
+        // deliberately NOT mirrored at admission (lock expiry upper bound, ask maturity,
+        // lock expiry for transfers, involuntary-cancel timing) plus the chain-state
+        // conditions that can go stale while a tx waits in the pool (owner changed by a
+        // competing transfer, lock consumed elsewhere, ask price changed, inheritance
+        // activated). A tx that waits in the pool and becomes invalid with height is
+        // TROU 2. Skip WITHOUT removing the tx. Miner policy only.
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_TRANSFER_DEPOSIT)
+        {
+          cryptonote::transaction tpl_full_tx;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx))
+          {
+            std::vector<tx_extra_field> xf;
+            tx_extra_pbc_transfer_deposit xfield{};
+            tx_extra_pbc_owner_sig xsig{};
+            bool stale = false;
+            std::string why;
+            if (parse_tx_extra(tpl_full_tx.extra, xf)
+                && find_tx_extra_field_by_type(xf, xfield)
+                && find_tx_extra_field_by_type(xf, xsig))
+            {
+              const uint64_t tpl_h = m_blockchain.get_current_blockchain_height(); // height of the block under construction
+              uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+              size_t dep_sz = sizeof(dep_buf);
+              pbc_deposit_record xrec{};
+              if (!m_blockchain.get_db().get_pbc_deposit(xfield.deposit_id, dep_buf, dep_sz))
+              { stale = true; why = "deposit_not_found"; }
+              else
+              {
+                pbc_unpack_deposit_record(dep_buf, dep_sz, xrec);
+                // Owner may have changed (a competing transfer mined elsewhere): re-verify
+                // the consensus V2 signature against the CURRENT owner_key.
+                const crypto::hash xmh = pbc_build_transfer_deposit_msg_hash(xfield.deposit_id,
+                    xfield.new_owner_spend_pubkey, xfield.lock_id, xfield.expected_dep_idx, xfield.expected_fee_idx);
+                if (!crypto::check_signature(xmh, xrec.owner_key, xsig.sig)) { stale = true; why = "owner_sig_stale"; }
+                else if (xrec.deposit_entry_index != xfield.expected_dep_idx || xrec.fee_entry_index != xfield.expected_fee_idx) { stale = true; why = "expected_indices_mismatch"; }
+                else
+                {
+                  collateral_lock_record lrec{};
+                  uint8_t lbuf[PBC_COLLATERAL_LOCK_RECORD_PACKED_SIZE];
+                  size_t lsz = sizeof(lbuf);
+                  if (!m_blockchain.get_db().get_pbc_collateral_lock(xfield.lock_id, lbuf, lsz)
+                      || !pbc_unpack_collateral_lock_record(lbuf, lsz, lrec)) { stale = true; why = "lock_not_found"; }
+                  else if (lrec.status != PBC_COLLATERAL_LOCK_ACTIVE || lrec.deposit_id != xfield.deposit_id
+                      || lrec.seller_pubkey != xrec.owner_key) { stale = true; why = "lock_invalid"; }
+                  else if (tpl_h > lrec.expiry_height) { stale = true; why = "lock_expired"; }
+                }
+              }
+            }
+            if (stale)
+            {
+              MGINFO("PBC MARKET: TRANSFER " << sorted_it->second
+                    << " skipped in block template — stale state (" << why << ") deposit=" << xfield.deposit_id);
+              continue;
+            }
+          }
+        }
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_LOCK_COLLATERAL)
+        {
+          cryptonote::transaction tpl_full_tx;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx))
+          {
+            std::vector<tx_extra_field> lf;
+            tx_extra_pbc_lock_collateral lfield{};
+            bool stale = false;
+            std::string why;
+            if (parse_tx_extra(tpl_full_tx.extra, lf) && find_tx_extra_field_by_type(lf, lfield))
+            {
+              const uint64_t tpl_h = m_blockchain.get_current_blockchain_height(); // block under construction
+              uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+              size_t dep_sz = sizeof(dep_buf);
+              pbc_deposit_record ldep{};
+              if (!m_blockchain.get_db().get_pbc_deposit(lfield.deposit_id, dep_buf, dep_sz))
+              { stale = true; why = "deposit_not_found"; }
+              else
+              {
+                pbc_unpack_deposit_record(dep_buf, dep_sz, ldep);
+                if (!(ldep.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
+                else if (ldep.owner_key != lfield.seller_pubkey) { stale = true; why = "seller_mismatch"; }
+                else
+                {
+                  crypto::hash existing_lock_id = crypto::null_hash;
+                  if (m_blockchain.get_db().get_active_pbc_collateral_lock_for_deposit(lfield.deposit_id, existing_lock_id))
+                  { stale = true; why = "deposit_already_locked"; }
+                  else
+                  {
+                    uint8_t inh_buf[PBC_INHERIT_RECORD_PACKED_SIZE];
+                    size_t inh_sz = sizeof(inh_buf);
+                    pbc_inherit_record inh_rec{};
+                    if (m_blockchain.get_db().get_pbc_inherit_record(ldep.owner_key, inh_buf, inh_sz)
+                        && pbc_unpack_inherit_record(inh_buf, inh_sz, inh_rec) && inh_rec.request_active)
+                    { stale = true; why = "inheritance_active"; }
+                    else
+                    {
+                      // Amount vs CURRENT ask price (may have changed since broadcast).
+                      uint64_t min_lock_amount = ldep.amount;
+                      uint64_t active_ask_price = 0;
+                      const std::string ask_key = std::string("pbc_ask_") + epee::string_tools::pod_to_hex(lfield.deposit_id) + "_price";
+                      if (m_blockchain.get_db().get_property_uint64(ask_key, active_ask_price) && active_ask_price > 0)
+                        min_lock_amount = active_ask_price;
+                      if (lfield.amount < min_lock_amount) { stale = true; why = "amount_below_minimum"; }
+                      // Expiry window vs the height of the block under construction.
+                      else if (lfield.expiry_height < tpl_h + PBC_LOCK_MIN_DURATION
+                          || lfield.expiry_height > tpl_h + PBC_LOCK_MAX_DURATION) { stale = true; why = "expiry_out_of_range"; }
+                    }
+                  }
+                }
+              }
+            }
+            if (stale)
+            {
+              MGINFO("PBC MARKET: LOCK_COLLATERAL " << sorted_it->second
+                    << " skipped in block template — stale state (" << why << ") deposit=" << lfield.deposit_id);
+              continue;
+            }
+          }
+        }
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_CANCEL_LOCK)
+        {
+          cryptonote::transaction tpl_full_tx;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx))
+          {
+            std::vector<tx_extra_field> cf;
+            tx_extra_pbc_cancel_lock cfield{};
+            bool stale = false;
+            std::string why;
+            if (parse_tx_extra(tpl_full_tx.extra, cf) && find_tx_extra_field_by_type(cf, cfield))
+            {
+              const uint64_t tpl_h = m_blockchain.get_current_blockchain_height(); // block under construction
+              collateral_lock_record crec{};
+              uint8_t lbuf[PBC_COLLATERAL_LOCK_RECORD_PACKED_SIZE];
+              size_t lsz = sizeof(lbuf);
+              if (!m_blockchain.get_db().get_pbc_collateral_lock(cfield.lock_id, lbuf, lsz)
+                  || !pbc_unpack_collateral_lock_record(lbuf, lsz, crec)) { stale = true; why = "lock_not_found"; }
+              else if (crec.status != PBC_COLLATERAL_LOCK_ACTIVE) { stale = true; why = "lock_not_active"; }
+              else if (!cfield.is_voluntary && tpl_h <= crec.expiry_height) { stale = true; why = "cancel_too_early"; }
+              else if (cfield.is_voluntary)
+              {
+                const crypto::hash cmh = pbc_build_cancel_lock_msg_hash(cfield.lock_id);
+                if (!crypto::check_signature(cmh, crec.buyer_pubkey, cfield.canceller_sig)) { stale = true; why = "canceller_sig_invalid"; }
+              }
+            }
+            if (stale)
+            {
+              MGINFO("PBC MARKET: CANCEL_LOCK " << sorted_it->second
+                    << " skipped in block template — stale state (" << why << ") lock=" << cfield.lock_id);
+              continue;
+            }
+          }
+        }
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_MARKET_ASK)
+        {
+          cryptonote::transaction tpl_full_tx;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx))
+          {
+            std::vector<tx_extra_field> af;
+            tx_extra_pbc_market_ask afield{};
+            bool stale = false;
+            std::string why;
+            if (parse_tx_extra(tpl_full_tx.extra, af) && find_tx_extra_field_by_type(af, afield))
+            {
+              const uint64_t tpl_h = m_blockchain.get_current_blockchain_height(); // block under construction
+              uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+              size_t dep_sz = sizeof(dep_buf);
+              pbc_deposit_record adep{};
+              if (!m_blockchain.get_db().get_pbc_deposit(afield.deposit_id, dep_buf, dep_sz))
+              { stale = true; why = "deposit_not_found"; }
+              else
+              {
+                pbc_unpack_deposit_record(dep_buf, dep_sz, adep);
+                if (adep.owner_key != afield.seller_pubkey) { stale = true; why = "seller_not_owner"; }
+                else if (afield.ask_price > 0 && adep.unlock_height <= tpl_h) { stale = true; why = "deposit_mature"; }
+              }
+            }
+            if (stale)
+            {
+              MGINFO("PBC MARKET ASK: " << sorted_it->second
+                    << " skipped in block template — stale state (" << why << ") deposit=" << afield.deposit_id);
+              continue;
+            }
+          }
+        }
+        // v8.2.20 FIX-B (lacune relevée en revue croisée post-v8.2.19) : type 1
+        // TERM_DEPOSIT. Le precheck d'admission ADMET volontairement un dépôt dont SEUL
+        // le contrôle 5b (borne haute d'unlock) échoue — il devient valide à
+        // unlock_height − palier − PBC_DEPOSIT_UNLOCK_MAX_MARGIN. Mais sans revalidation
+        // au gabarit, il est inclus dans CHAQUE gabarit entre-temps : bloc invalide
+        // (« INVALID DEPOSIT in block », blockchain.cpp:8282), FIX-C le purge localement,
+        // le relais le ré-admet — un unlock à +100 000 blocs empoisonne la production
+        // pendant 100 000 blocs. Skip SANS retirer la tx du pool : elle devient
+        // incluable d'elle-même à la bonne hauteur (jamais de faux rejet).
+        // Politique mineur uniquement — la validation de bloc est inchangée.
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_TERM_DEPOSIT)
+        {
+          cryptonote::transaction tpl_full_tx;
+          if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx))
+          {
+            const uint64_t tpl_h = m_blockchain.get_current_blockchain_height(); // block under construction
+            pbc_deposit_record trec{};
+            std::string treason;
+            if (pbc_validate_deposit_tx(tpl_full_tx, tpl_h, trec, treason) != PBC_DEPOSIT_VALID)
+            {
+              MGINFO("PBC TD: TERM_DEPOSIT " << sorted_it->second
+                    << " skipped in block template — " << treason);
+              continue;
+            }
           }
         }
       }
