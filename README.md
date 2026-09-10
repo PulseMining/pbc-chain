@@ -11,9 +11,11 @@
 
 This repository hosts the **source code only** (no binaries):
 
-- **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.2.17)
-- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.0.16, Windows/Linux) — v1.0.16 fixes the daemon RCT output distribution: pbc_withdraw outputs (deposit withdrawals, marketplace payouts) were stored in the amount-0 RCT bucket but never counted in bi_cum_rct, causing wallet spend failures ("failed to get output distribution"); one-time automatic DB migration (v6→v7) recomputes it on first start, no resync. v1.0.15 backported the official Monero fix (v0.18.4.6) for an RPC/P2P connection race in the epee networking layer that caused repeated SIGSEGV crashes at a pool operator under heavy short-timeout client load. Includes the v1.0.13 inheritance stall fix and the v1.0.14 interface fixes (chart tooltip, inheritance UX, clickable txids, Block column, wallet picker). Includes everything from v1.0.11 (opt-in pool integration, bank statement with running balance, segmented "Daily Inflows" charts)
+- **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.2.21)
+- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.0.20, Windows/Linux)
 - **`BUILD.md`** — build & setup guide (node, wallets, web UI)
+
+**Latest stable: chain v8.2.21, GUI wallet v1.0.20. Security and stability update — update recommended for all users.**
 
 The miner source is distributed separately and is not part of this repository.
 
