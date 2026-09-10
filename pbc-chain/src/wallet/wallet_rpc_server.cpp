@@ -6975,22 +6975,27 @@ bool wallet_rpc_server::on_pbc_lock_collateral(const wallet_rpc::COMMAND_RPC_PBC
   bool ok = m_wallet->invoke_http_json_rpc("/json_rpc", "get_pbc_deposit_info", dep_req, dep_res, tools::wallet2::rpc_timeout);
   if (!ok || !dep_res.found) { er.code = -32001; er.message = "DEPOSIT_NOT_FOUND"; return false; }
   if (dep_res.owner_key != epee::string_tools::pod_to_hex(addr_info.address.m_spend_public_key)) { er.code = -32003; er.message = "SELLER_PUBKEY_MISMATCH"; return false; }
-  // If an active ask exists, allow amount >= ask_price (marketplace discount).
-  // Otherwise require amount >= principal (legacy behavior).
+  // v8.2.21: a lock is only buildable against an ACTIVE ask (price > 0) with
+  // amount >= ask_price — the node now enforces both (ask_inactive /
+  // amount_below_ask), so fail here with a clear message instead of broadcasting
+  // a tx that can never be mined.
   {
-    uint64_t min_amount = dep_res.amount; // default: full principal
+    uint64_t ask_price = 0;
+    bool ask_active = false;
     cryptonote::COMMAND_RPC_GET_ALL_MARKET_ASKS::request asks_req{};
     cryptonote::COMMAND_RPC_GET_ALL_MARKET_ASKS::response asks_res{};
     bool asks_ok = m_wallet->invoke_http_json_rpc("/json_rpc", "get_all_market_asks", asks_req, asks_res, tools::wallet2::rpc_timeout);
     if (asks_ok) {
       for (const auto& ask : asks_res.asks) {
         if (ask.deposit_id == req.deposit_id && ask.ask_price > 0) {
-          min_amount = ask.ask_price;
+          ask_price = ask.ask_price;
+          ask_active = true;
           break;
         }
       }
     }
-    if (req.amount < min_amount) { er.code = -32005; er.message = "AMOUNT_BELOW_MINIMUM (ask=" + std::to_string(min_amount) + " principal=" + std::to_string(dep_res.amount) + ")"; return false; }
+    if (!ask_active) { er.code = -32017; er.message = "ASK_INACTIVE: this deposit has no active ask — the lock would never be mined. Wait for the seller to (re)list it."; return false; }
+    if (req.amount < ask_price) { er.code = -32005; er.message = "AMOUNT_BELOW_ASK (ask=" + std::to_string(ask_price) + " principal=" + std::to_string(dep_res.amount) + ")"; return false; }
   }
   uint64_t expected_dep_idx = req.expected_dep_idx ? req.expected_dep_idx : 0;
   uint64_t expected_fee_idx = req.expected_fee_idx ? req.expected_fee_idx : 0;
@@ -7104,8 +7109,13 @@ bool wallet_rpc_server::on_pbc_transfer_deposit(const wallet_rpc::COMMAND_RPC_PB
     uint64_t seller_payment_amount = req.seller_payment_amount ? req.seller_payment_amount : lock_res.amount;
     uint64_t expected_dep_idx = req.expected_dep_idx ? req.expected_dep_idx : lock_res.expected_dep_idx;
     uint64_t expected_fee_idx = req.expected_fee_idx ? req.expected_fee_idx : lock_res.expected_fee_idx;
+    // v8.2.21: the lock record stores pubkeys only, so lock_res.seller_address is
+    // empty and the parse below always failed ("Invalid seller address on lock").
+    // The wallet executing the transfer IS the seller (it signs with the owner's
+    // spend key, verified against dep_rec.owner_key) — use its own address.
     cryptonote::address_parse_info seller_info{};
-    if (!get_account_address_from_str_or_url(seller_info, m_wallet->nettype(), lock_res.seller_address)) { er.code = WALLET_RPC_ERROR_CODE_WRONG_ADDRESS; er.message = "Invalid seller address on lock"; return false; }
+    seller_info.address = m_wallet->get_account().get_keys().m_account_address;
+    seller_info.is_subaddress = false;
     wallet2::pending_tx ptx = m_wallet->create_transfer_deposit_tx(deposit_id, addr_info.address, seller_info.address, lock_id, expected_dep_idx, expected_fee_idx, seller_payment_amount, req.priority);
     cryptonote::transaction tx = ptx.tx;
     m_wallet->commit_tx(ptx);

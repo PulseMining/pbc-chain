@@ -2339,6 +2339,52 @@ void wallet2::scan_output(const cryptonote::transaction &tx, bool miner_tx, cons
   }
   if (tx_scan_info.money_transfered == 0)
   {
+    // v8.2.21 (ajout necessaire, Option A validee par Stef) : repli de scan pour les
+    // payouts marketplace a masque zero. Le mask force a zero a la construction
+    // (rctSigs.cpp:157-159) n'est PAS transmissible en ECDH v2 (le mask n'est pas
+    // emis, il est reconstruit cote recepteur via genCommitmentMask, rctOps.cpp:715)
+    // -> le decodage generique echoue alors que le MONTANT, lui, est transmis
+    // correctement. Sans ce repli le vendeur ne verrait jamais son paiement.
+    // Un output n'est accepte que si les TROIS conditions suivantes sont reunies :
+    //   (a) la tx porte un tag type LOCK_COLLATERAL ou TRANSFER_DEPOSIT (jamais une
+    //       tx ordinaire, jamais un depot — les depots restent sautes par design) ;
+    //   (b) le montant ECDH v2 decode est > 0 ;
+    //   (c) le commitment on-chain de CET output vaut EXACTEMENT amount*H (masque
+    //       zero) — le montant accepte est donc forcement le montant reellement
+    //       commité, aucune surestimation possible.
+    bool zm_market_tx = false;
+    std::vector<cryptonote::tx_extra_field> zm_fields;
+    cryptonote::tx_extra_pbc_tx_type zm_type{};
+    if (cryptonote::parse_tx_extra(tx.extra, zm_fields)
+        && cryptonote::find_tx_extra_field_by_type(zm_fields, zm_type))
+      zm_market_tx = (zm_type.type == PBC_TX_TYPE_LOCK_COLLATERAL || zm_type.type == PBC_TX_TYPE_TRANSFER_DEPOSIT);
+    if (zm_market_tx
+        && (tx.rct_signatures.type == rct::RCTTypeBulletproof2
+         || tx.rct_signatures.type == rct::RCTTypeCLSAG
+         || tx.rct_signatures.type == rct::RCTTypeBulletproofPlus
+         || tx.rct_signatures.type == rct::RCTTypeBulletproofPlus_FullCommit)
+        && i < tx.rct_signatures.ecdhInfo.size()
+        && i < tx.rct_signatures.outPk.size())
+    {
+      crypto::secret_key zm_scalar1;
+      m_account.get_device().derivation_to_scalar(tx_scan_info.received->derivation, i, zm_scalar1);
+      rct::ecdhTuple zm_ecdh = tx.rct_signatures.ecdhInfo[i];
+      m_account.get_device().ecdhDecode(zm_ecdh, rct::sk2rct(zm_scalar1), true /* v2 */);
+      const uint64_t zm_amount = rct::h2d(zm_ecdh.amount);
+      rct::key zm_C = tx.rct_signatures.outPk[i].mask;
+      if (rct::is_rct_bp_plus_legacy(tx.rct_signatures.type))
+        zm_C = rct::scalarmult8(zm_C);
+      if (zm_amount > 0 && zm_C == rct::commit(zm_amount, rct::zero()))
+      {
+        tx_scan_info.money_transfered = zm_amount;
+        tx_scan_info.mask = rct::zero();
+        LOG_PRINT_L1("scan_output: accepted zero-mask marketplace payout at vout[" << i
+          << "] amount=" << zm_amount << " (v8.2.21 lock/transfer payout)");
+      }
+    }
+  }
+  if (tx_scan_info.money_transfered == 0)
+  {
     MERROR("Invalid output amount, skipping");
     tx_scan_info.error = true;
     return;
@@ -18514,7 +18560,70 @@ wallet2::pending_tx wallet2::create_lock_collateral_tx(const crypto::hash& depos
   cryptonote::tx_destination_entry de; de.addr = seller_address; de.amount = amount; de.is_subaddress = false; de.is_integrated = false; dsts.push_back(de);
   auto ptxs = create_transactions_2(dsts, adjust_mixin(0), adjust_priority(priority), extra, 0, {}, {});
   THROW_WALLET_EXCEPTION_IF(ptxs.size() != 1, error::wallet_internal_error, "lock_collateral: expected single tx");
-  return ptxs[0];
+
+  // ── v8.2.21: rebuild the tx with the seller payment as a VERIFIABLE output ──
+  // Same pattern as the deposit (create_term_deposit_tx):
+  //   shuffle_outs = false            → seller payment stays at vout[0]
+  //   pbc_force_zero_mask_index = 0   → commitment = amount*H (mask=0)
+  // so every node can verify that the paid amount equals lock_field.amount
+  // (pbc_verify_lock_payout_output). The 1.0.20 wallet's scan fallback accepts
+  // this output on the seller side (scan_output, tag-gated).
+  pending_tx ptx = ptxs[0];
+  auto cd = ptx.construction_data;
+  {
+    // cd.splitted_dsts stores the shuffled order — move the payout to index 0
+    // before the rebuild so the zero mask applies to the seller payment.
+    int pay_idx = -1;
+    for (size_t i = 0; i < cd.splitted_dsts.size(); ++i)
+    {
+      if (cd.splitted_dsts[i].amount == amount)
+      {
+        pay_idx = (int)i;
+        break;
+      }
+    }
+    THROW_WALLET_EXCEPTION_IF(pay_idx < 0, error::wallet_internal_error,
+      "lock_collateral: payout output (amount=" + std::to_string(amount) + ") not found in splitted_dsts");
+    if (pay_idx != 0)
+      std::swap(cd.splitted_dsts[0], cd.splitted_dsts[pay_idx]);
+  }
+
+  crypto::secret_key tx_key;
+  std::vector<crypto::secret_key> additional_tx_keys;
+  rct::RCTConfig rct_config = cd.rct_config;
+
+  cryptonote::transaction tx;
+  bool r = cryptonote::construct_tx_and_get_tx_key(
+      m_account.get_keys(), m_subaddresses,
+      cd.sources, cd.splitted_dsts, cd.change_dts.addr,
+      cd.extra, tx, tx_key, additional_tx_keys,
+      true,             // rct
+      rct_config,
+      cd.use_view_tags,
+      false,            // shuffle_outs = false
+      0,                // pbc_force_zero_mask_index = 0 (seller payment at vout[0])
+      0                 // unlock_time
+  );
+  THROW_WALLET_EXCEPTION_IF(!r, error::tx_not_constructed, cd.sources, cd.splitted_dsts, m_nettype);
+
+  ptx.tx = tx;
+  ptx.tx_key = tx_key;
+  ptx.additional_tx_keys = additional_tx_keys;
+
+  // Rebuild key_images string (same pattern as transfer_selected_rct / deposit)
+  std::string key_images;
+  bool all_are_txin_to_key = std::all_of(tx.vin.begin(), tx.vin.end(), [&](const txin_v& s_e) -> bool
+  {
+    CHECKED_GET_SPECIFIC_VARIANT(s_e, const txin_to_key, in, false);
+    key_images += boost::to_string(in.k_image) + " ";
+    return true;
+  });
+  THROW_WALLET_EXCEPTION_IF(!all_are_txin_to_key && !is_pbc_withdraw_tx(tx), error::unexpected_txin_type, tx);
+  ptx.key_images = key_images;
+
+  LOG_PRINT_L1("create_lock_collateral_tx: amount=" << amount
+    << " zero-mask payout at vout[0], txid=" << get_transaction_hash(tx));
+  return ptx;
 }
 
 wallet2::pending_tx wallet2::create_cancel_lock_tx(const crypto::hash& lock_id, uint64_t refund_amount, uint32_t priority)
@@ -18658,7 +18767,59 @@ wallet2::pending_tx wallet2::create_transfer_deposit_tx(const crypto::hash& depo
         auto ptxs = create_transactions_2(dsts, adjust_mixin(0), adjust_priority(priority), extra, 0, {}, {});
         if (ptxs.size() != 1) continue;
         if (std::find(ptxs[0].selected_transfers.begin(), ptxs[0].selected_transfers.end(), lock_idx) == ptxs[0].selected_transfers.end()) continue;
-        return ptxs[0];
+
+        // ── v8.2.21: rebuild with the seller payment as a VERIFIABLE output ──
+        // Same zero-mask-at-vout[0] pattern as create_lock_collateral_tx, so the
+        // node-side rule (payout_not_verifiable vs the lock amount) holds on both
+        // paths and the seller's wallet can scan + spend this payment.
+        pending_tx ptx = ptxs[0];
+        auto cd = ptx.construction_data;
+        {
+          int pay_idx = -1;
+          for (size_t i = 0; i < cd.splitted_dsts.size(); ++i)
+          {
+            if (cd.splitted_dsts[i].amount == seller_payment_amount)
+            {
+              pay_idx = (int)i;
+              break;
+            }
+          }
+          THROW_WALLET_EXCEPTION_IF(pay_idx < 0, error::wallet_internal_error,
+            "transfer_deposit: payout output (amount=" + std::to_string(seller_payment_amount) + ") not found in splitted_dsts");
+          if (pay_idx != 0)
+            std::swap(cd.splitted_dsts[0], cd.splitted_dsts[pay_idx]);
+        }
+        crypto::secret_key tx_key;
+        std::vector<crypto::secret_key> additional_tx_keys;
+        rct::RCTConfig rct_config = cd.rct_config;
+        cryptonote::transaction tx;
+        bool r = cryptonote::construct_tx_and_get_tx_key(
+            m_account.get_keys(), m_subaddresses,
+            cd.sources, cd.splitted_dsts, cd.change_dts.addr,
+            cd.extra, tx, tx_key, additional_tx_keys,
+            true,             // rct
+            rct_config,
+            cd.use_view_tags,
+            false,            // shuffle_outs = false
+            0,                // pbc_force_zero_mask_index = 0 (seller payment at vout[0])
+            0                 // unlock_time
+        );
+        THROW_WALLET_EXCEPTION_IF(!r, error::tx_not_constructed, cd.sources, cd.splitted_dsts, m_nettype);
+        ptx.tx = tx;
+        ptx.tx_key = tx_key;
+        ptx.additional_tx_keys = additional_tx_keys;
+        std::string key_images;
+        bool all_are_txin_to_key = std::all_of(tx.vin.begin(), tx.vin.end(), [&](const txin_v& s_e) -> bool
+        {
+          CHECKED_GET_SPECIFIC_VARIANT(s_e, const txin_to_key, in, false);
+          key_images += boost::to_string(in.k_image) + " ";
+          return true;
+        });
+        THROW_WALLET_EXCEPTION_IF(!all_are_txin_to_key && !is_pbc_withdraw_tx(tx), error::unexpected_txin_type, tx);
+        ptx.key_images = key_images;
+        LOG_PRINT_L1("create_transfer_deposit_tx: seller_payment=" << seller_payment_amount
+          << " zero-mask payout at vout[0], txid=" << get_transaction_hash(tx));
+        return ptx;
       }
       catch (const tools::error::not_enough_money&) {}
       catch (const tools::error::not_enough_unlocked_money&) {}

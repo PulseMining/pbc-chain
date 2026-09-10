@@ -845,6 +845,27 @@ namespace cryptonote
           tvc.m_no_drop_offense = true;
           return false;
         }
+        // v8.2.21: same verifiable-payout rule as locks (type 8) — the transfer's
+        // payment to the seller must be a zero-mask commitment at the fixed index,
+        // matching the lock record amount. Already inside CRITICAL_REGION above.
+        {
+          uint8_t xfer_lbuf[PBC_COLLATERAL_LOCK_RECORD_PACKED_SIZE];
+          size_t xfer_lsz = sizeof(xfer_lbuf);
+          collateral_lock_record xfer_lock_rec{};
+          if (m_blockchain.get_db().get_pbc_collateral_lock(xfer_field.lock_id, xfer_lbuf, xfer_lsz)
+              && pbc_unpack_collateral_lock_record(xfer_lbuf, xfer_lsz, xfer_lock_rec))
+          {
+            std::string payout_fail;
+            if (!pbc_verify_lock_payout_output(tx, xfer_lock_rec.amount, payout_fail))
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected transfer_deposit tx=" << id
+                << " reason=payout_not_verifiable " << payout_fail);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+          }
+        }
       }
 
       // Additional marketplace mempool anti-conflict checks (best-effort)
@@ -1608,6 +1629,45 @@ namespace cryptonote
           if (!crypto::check_signature(lock_msg_hash, lock_f.buyer_pubkey, lock_f.buyer_signature))
           {
             LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id << " reason=buyer_sig_invalid");
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          // v8.2.21: the lock is admitted only if it is VERIFIABLE (zero-mask payout
+          // output at the fixed index — wallet 1.0.20 format; old-format locks are
+          // rejected on purpose, GUI 1.0.20 ships with this release) and MATCHABLE
+          // in this block (active ask, amount >= ask price). Same three conditions
+          // are re-checked as stale in fill_block_template.
+          {
+            std::string payout_fail;
+            if (!pbc_verify_lock_payout_output(tx, lock_f.amount, payout_fail))
+            {
+              LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+                << " reason=payout_not_verifiable " << payout_fail);
+              tvc.m_verifivation_failed = true;
+              tvc.m_no_drop_offense = true;
+              return false;
+            }
+          }
+          uint64_t lock_ask_price = 0;
+          bool lock_ask_active = false;
+          {
+            CRITICAL_REGION_LOCAL1(m_blockchain);
+            const std::string ask_key = std::string("pbc_ask_") + epee::string_tools::pod_to_hex(lock_f.deposit_id) + "_price";
+            lock_ask_active = m_blockchain.get_db().get_property_uint64(ask_key, lock_ask_price) && lock_ask_price > 0;
+          }
+          if (!lock_ask_active)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+              << " reason=ask_inactive deposit=" << lock_f.deposit_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (lock_f.amount < lock_ask_price)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected lock_collateral tx=" << id
+              << " reason=amount_below_ask amount=" << lock_f.amount << " ask=" << lock_ask_price);
             tvc.m_verifivation_failed = true;
             tvc.m_no_drop_offense = true;
             return false;
@@ -3180,6 +3240,32 @@ namespace cryptonote
       tx_order.insert(tx_order.begin(), pbc_priority.begin(), pbc_priority.end());
     }
 
+    // v8.2.21: same-block race guard for marketplace locks. A MARKET_ASK change
+    // (relist / price update / removal) sitting in the pool can invalidate the
+    // ask a pending lock was signed against — if both entered the same block,
+    // apply order could pay the seller WITHOUT transferring the deposit (the
+    // template checks below read chain state at h-1 only). Collect every deposit
+    // with an ask-change candidate in the pool: locks on those deposits are
+    // stale for THIS template (ask_inactive) — delay only, the lock stays in
+    // the pool and becomes eligible once the ask state settles. Conservative
+    // buyer protection — block validation is unchanged.
+    std::unordered_set<crypto::hash> tpl_ask_changed_deps;
+    for (auto pre_it = tx_order.begin(); pre_it != tx_order.end(); ++pre_it)
+    {
+      const auto pre_sorted = *pre_it;
+      cryptonote::blobdata pre_blob = m_blockchain.get_txpool_tx_blob(pre_sorted->second, relay_category::all);
+      cryptonote::transaction_prefix pre_pfx;
+      std::vector<tx_extra_field> pre_fields;
+      tx_extra_pbc_tx_type pre_type{};
+      tx_extra_pbc_market_ask pre_ask{};
+      if (parse_and_validate_tx_prefix_from_blob(pre_blob, pre_pfx)
+          && parse_tx_extra(pre_pfx.extra, pre_fields)
+          && find_tx_extra_field_by_type(pre_fields, pre_type)
+          && pre_type.type == PBC_TX_TYPE_MARKET_ASK
+          && find_tx_extra_field_by_type(pre_fields, pre_ask))
+        tpl_ask_changed_deps.insert(pre_ask.deposit_id);
+    }
+
     for (auto order_it = tx_order.begin(); order_it != tx_order.end(); ++order_it)
     {
       const auto sorted_it = *order_it;   // nom conserve : le corps de boucle est inchange
@@ -3473,6 +3559,13 @@ namespace cryptonote
                   else if (lrec.status != PBC_COLLATERAL_LOCK_ACTIVE || lrec.deposit_id != xfield.deposit_id
                       || lrec.seller_pubkey != xrec.owner_key) { stale = true; why = "lock_invalid"; }
                   else if (tpl_h > lrec.expiry_height) { stale = true; why = "lock_expired"; }
+                  else
+                  {
+                    // v8.2.21: same verifiable-payout rule as locks — the transfer's
+                    // payment to the seller must match the lock amount at the fixed index.
+                    std::string payout_fail;
+                    if (!pbc_verify_lock_payout_output(tpl_full_tx, lrec.amount, payout_fail)) { stale = true; why = "payout_not_verifiable"; }
+                  }
                 }
               }
             }
@@ -3496,6 +3589,14 @@ namespace cryptonote
             if (parse_tx_extra(tpl_full_tx.extra, lf) && find_tx_extra_field_by_type(lf, lfield))
             {
               const uint64_t tpl_h = m_blockchain.get_current_blockchain_height(); // block under construction
+              // v8.2.21: the lock is included only if VERIFIABLE and MATCHABLE in
+              // this block — this is what protects the buyer against the race: if
+              // the ask is pulled before inclusion, the lock is never mined and
+              // expires from the pool without having paid anyone.
+              std::string payout_fail;
+              if (!pbc_verify_lock_payout_output(tpl_full_tx, lfield.amount, payout_fail)) { stale = true; why = "payout_not_verifiable"; }
+              else
+              {
               uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
               size_t dep_sz = sizeof(dep_buf);
               pbc_deposit_record ldep{};
@@ -3521,19 +3622,23 @@ namespace cryptonote
                     { stale = true; why = "inheritance_active"; }
                     else
                     {
-                      // Amount vs CURRENT ask price (may have changed since broadcast).
-                      uint64_t min_lock_amount = ldep.amount;
+                      // v8.2.21: matchability vs the CURRENT ask — an inactive ask
+                      // (price 0 / key absent) or a lock amount below the ask price
+                      // makes the lock stale (kept in pool, never mined).
                       uint64_t active_ask_price = 0;
                       const std::string ask_key = std::string("pbc_ask_") + epee::string_tools::pod_to_hex(lfield.deposit_id) + "_price";
-                      if (m_blockchain.get_db().get_property_uint64(ask_key, active_ask_price) && active_ask_price > 0)
-                        min_lock_amount = active_ask_price;
-                      if (lfield.amount < min_lock_amount) { stale = true; why = "amount_below_minimum"; }
+                      // An ask change for this deposit is pending in the pool: the
+                      // ask the buyer signed against may be gone by apply time.
+                      if (tpl_ask_changed_deps.count(lfield.deposit_id)) { stale = true; why = "ask_inactive"; }
+                      else if (!m_blockchain.get_db().get_property_uint64(ask_key, active_ask_price) || active_ask_price == 0) { stale = true; why = "ask_inactive"; }
+                      else if (lfield.amount < active_ask_price) { stale = true; why = "amount_below_ask"; }
                       // Expiry window vs the height of the block under construction.
                       else if (lfield.expiry_height < tpl_h + PBC_LOCK_MIN_DURATION
                           || lfield.expiry_height > tpl_h + PBC_LOCK_MAX_DURATION) { stale = true; why = "expiry_out_of_range"; }
                     }
                   }
                 }
+              }
               }
             }
             if (stale)

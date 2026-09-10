@@ -5,6 +5,9 @@
 #include <vector>
 #include "crypto/crypto.h"
 #include "cryptonote_basic/account.h"
+#include "cryptonote_basic/cryptonote_basic.h"
+#include "ringct/rctOps.h"
+#include "ringct/rctTypes.h"
 
 namespace cryptonote
 {
@@ -96,5 +99,51 @@ inline crypto::hash pbc_build_transfer_deposit_msg_hash(const crypto::hash& depo
   msg.append(reinterpret_cast<const char*>(&expected_dep_idx), 8);
   msg.append(reinterpret_cast<const char*>(&expected_fee_idx), 8);
   return crypto::cn_fast_hash(msg.data(), msg.size());
+}
+
+// ── v8.2.21: verifiable marketplace payout ────────────────────────────────────
+// The lock/transfer payment to the seller is built by wallet 1.0.20 as a
+// ZERO-MASK commitment (C = amount * H) at a FIXED output index, exactly like
+// the deposit output (pbc_deposits.cpp TD-3). Any node can then verify that the
+// amount actually paid equals the declared lock amount — logic COPIED from
+// pbc_deposits.cpp:400-418 (do NOT modify pbc_deposits.cpp).
+static constexpr size_t PBC_LOCK_PAYOUT_VOUT_INDEX = 0;
+
+inline bool pbc_verify_lock_payout_output(const cryptonote::transaction& tx, uint64_t amount, std::string& fail_reason)
+{
+  if (tx.vout.size() <= PBC_LOCK_PAYOUT_VOUT_INDEX)
+  {
+    fail_reason = "tx has " + std::to_string(tx.vout.size())
+                + " outputs, need at least " + std::to_string(PBC_LOCK_PAYOUT_VOUT_INDEX + 1);
+    return false;
+  }
+  if (tx.rct_signatures.type == rct::RCTTypeNull)
+  {
+    fail_reason = "tx is RCTTypeNull, lock payout must be an RCT output";
+    return false;
+  }
+  if (tx.rct_signatures.outPk.size() <= PBC_LOCK_PAYOUT_VOUT_INDEX)
+  {
+    fail_reason = "tx has " + std::to_string(tx.rct_signatures.outPk.size())
+                + " commitments, need at least " + std::to_string(PBC_LOCK_PAYOUT_VOUT_INDEX + 1);
+    return false;
+  }
+  // For RCTTypeBulletproofPlus (legacy), outPk[i].mask stores (1/8) * commitment
+  // (bulletproof_plus_PROVE divides by 8 for subgroup safety) — recover the full
+  // commitment before comparison, same as TD-3.
+  const rct::key C_expected = rct::commit(amount, rct::zero());
+  rct::key C_actual;
+  if (rct::is_rct_bp_plus_legacy(tx.rct_signatures.type))
+    C_actual = rct::scalarmult8(tx.rct_signatures.outPk[PBC_LOCK_PAYOUT_VOUT_INDEX].mask);
+  else
+    C_actual = tx.rct_signatures.outPk[PBC_LOCK_PAYOUT_VOUT_INDEX].mask;
+  if (!(C_actual == C_expected))
+  {
+    fail_reason = "lock payout commitment mismatch at outPk["
+                + std::to_string(PBC_LOCK_PAYOUT_VOUT_INDEX)
+                + "]: expected amount*H (mask=0) for amount=" + std::to_string(amount);
+    return false;
+  }
+  return true;
 }
 }
