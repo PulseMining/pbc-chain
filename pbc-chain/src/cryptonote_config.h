@@ -160,6 +160,17 @@
 #define PBC_TIER_180D_BLOCKS              259200
 #define PBC_LOCK_MIN_DURATION             50
 #define PBC_LOCK_MAX_DURATION             1440
+// v8.3.0 soft fork: from this height (height of the BLOCK BEING VALIDATED, never
+// the node's current height — resync/reorg deterministic) the marketplace lock /
+// transfer seller payout must be a VERIFIABLE zero-mask commitment, checked in
+// consensus via pbc_verify_lock_payout_output (pbc_collateral_lock.h), the same
+// helper tx_pool.cpp already uses since v8.2.21. Below this height the legacy
+// check (pbc_tx_has_market_payout_amount) applies unchanged. NO major_version
+// bump, NO hardforks.cpp entry — non-updated nodes keep following the chain.
+// TEST VALUE: snapshot .pbcchain_8219_B height 8757 (mine11, read 2026-09-10)
+// + 30 = 8787. PROD value set by Stef at release time — the ONLY difference
+// between test and release builds is this line.
+#define PBC_MARKET_CONSENSUS_HEIGHT       28400  // PROD : fixée par Stef 2026-09-11 (accord Aria) ; test : 8787
 #define PBC_TIER_270D_BLOCKS              388800
 #define PBC_TIER_365D_BLOCKS              525600
 

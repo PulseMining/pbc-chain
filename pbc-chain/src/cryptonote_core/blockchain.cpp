@@ -8752,9 +8752,22 @@ leave:
           bvc.m_verifivation_failed = true;
           return false;
         }
-        if (!pbc_tx_has_market_payout_amount(lock_tx, lock_field.amount))
+        // v8.3.0 soft fork: from PBC_MARKET_CONSENSUS_HEIGHT (height of the block
+        // being validated) the seller payout must be a VERIFIABLE zero-mask
+        // commitment — the same pbc_verify_lock_payout_output helper tx_pool.cpp
+        // already uses. Below the gate: legacy check, unchanged.
+        bool payout_ok = false;
+        std::string payout_fail_reason;
+        if (block_height >= PBC_MARKET_CONSENSUS_HEIGHT)
+          payout_ok = pbc_verify_lock_payout_output(lock_tx, lock_field.amount, payout_fail_reason);
+        else
+          payout_ok = pbc_tx_has_market_payout_amount(lock_tx, lock_field.amount);
+        if (!payout_ok)
         {
-          MERROR("PBC MARKET: LOCK_COLLATERAL backing output missing tx=" << lock_tx_id << " amount=" << lock_field.amount);
+          if (block_height >= PBC_MARKET_CONSENSUS_HEIGHT)
+            MERROR("PBC market: lock rejected by consensus rule (h=" << block_height << " >= activation " << PBC_MARKET_CONSENSUS_HEIGHT << ") tx=" << lock_tx_id << " reason=" << payout_fail_reason);
+          else
+            MERROR("PBC MARKET: LOCK_COLLATERAL backing output missing tx=" << lock_tx_id << " amount=" << lock_field.amount);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
@@ -8862,6 +8875,23 @@ leave:
           if (m_db->get_property_uint64(pbc_ask_dep_key(lock_field.deposit_id, "_price"), ask_price)
               && ask_price > 0 && lock_field.amount >= ask_price)
           {
+            // v8.3.0 soft fork re-assert (defense in depth): under the consensus gate,
+            // re-verify the zero-mask payout BEFORE any auto-match fires — the matched
+            // amount is never the self-declared lock_field.amount alone.
+            if (block_height >= PBC_MARKET_CONSENSUS_HEIGHT)
+            {
+              std::string am_payout_fail;
+              if (!pbc_verify_lock_payout_output(lock_tx, lock_field.amount, am_payout_fail))
+              {
+                MERROR("PBC market: lock rejected by consensus rule (h=" << block_height << " >= activation " << PBC_MARKET_CONSENSUS_HEIGHT << ") tx=" << lock_tx_id << " reason=" << am_payout_fail);
+                if (pbc_started_batch) m_db->batch_abort();
+                m_batch_success = false;
+                pbc_poison_txid = lock_tx_id;
+                return_txs_to_pool();
+                bvc.m_verifivation_failed = true;
+                return false;
+              }
+            }
             // Save pre-match deposit indices for reorg rollback (BEFORE implicit claim modifies dep_rec).
             m_db->set_property_uint128(pbc_market_key(lock_tx_id, "_am_old_dep_idx"), dep_rec.deposit_entry_index);
             m_db->set_property_uint128(pbc_market_key(lock_tx_id, "_am_old_fee_idx"), dep_rec.fee_entry_index);
@@ -9208,9 +9238,22 @@ leave:
           bvc.m_verifivation_failed = true;
           return false;
         }
-        if (!pbc_tx_has_market_payout_amount(xfer_tx, lock_rec.amount))
+        // v8.3.0 soft fork: from PBC_MARKET_CONSENSUS_HEIGHT (height of the block
+        // being validated) the transfer's seller payout must be a VERIFIABLE
+        // zero-mask commitment — same helper as the lock path and tx_pool.cpp.
+        // Below the gate: legacy check, unchanged.
+        bool xfer_payout_ok = false;
+        std::string xfer_payout_fail_reason;
+        if (block_height >= PBC_MARKET_CONSENSUS_HEIGHT)
+          xfer_payout_ok = pbc_verify_lock_payout_output(xfer_tx, lock_rec.amount, xfer_payout_fail_reason);
+        else
+          xfer_payout_ok = pbc_tx_has_market_payout_amount(xfer_tx, lock_rec.amount);
+        if (!xfer_payout_ok)
         {
-          MERROR("PBC MARKET: transfer seller payment output missing tx=" << xfer_tx_id << " amount=" << lock_rec.amount);
+          if (block_height >= PBC_MARKET_CONSENSUS_HEIGHT)
+            MERROR("PBC market: transfer rejected by consensus rule (h=" << block_height << " >= activation " << PBC_MARKET_CONSENSUS_HEIGHT << ") tx=" << xfer_tx_id << " reason=" << xfer_payout_fail_reason);
+          else
+            MERROR("PBC MARKET: transfer seller payment output missing tx=" << xfer_tx_id << " amount=" << lock_rec.amount);
           if (pbc_started_batch) m_db->batch_abort();
           m_batch_success = false;
           // PBC: return taken txs to the pool on block failure (was leaking
