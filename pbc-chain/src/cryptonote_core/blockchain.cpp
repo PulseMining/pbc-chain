@@ -3492,6 +3492,16 @@ bool Blockchain::create_block_template(block& b, const crypto::hash *from_block,
     bei.bl = b;
     bei.height = alt_chain.size() ? prev_data.height + 1 : m_db->get_block_height(*from_block) + 1;
 
+    // PBC: same minimum-depth rule as handle_alternative_block. A template
+    // requested on a base below that depth is refused with a clean error.
+    // A legitimate miner always requests a base near the current tip and
+    // never encounters this.
+    if (bei.height < DIFFICULTY_BLOCKS_COUNT_V4 + 2)
+    {
+      MERROR("Block template request rejected: base block too close to chain start (height " << bei.height << ")");
+      return false;
+    }
+
     diffic = get_next_difficulty_for_alternative_chain(alt_chain, bei);
   }
   else
@@ -3782,6 +3792,26 @@ bool Blockchain::handle_alternative_block(const block& b, const crypto::hash& id
   if(0 == block_height)
   {
     MERROR_VER("Block with id: " << epee::string_tools::pod_to_hex(id) << " (as alternative), but miner tx says height is 0.");
+    bvc.m_verifivation_failed = true;
+    return false;
+  }
+  // PBC: alternative blocks are only considered from a minimum chain depth.
+  // Below that depth an alternative branch has no legitimate use on this
+  // chain, so the block is rejected early and is not stored. The height used
+  // here is taken from the parent block as recorded in the database, which is
+  // the authoritative value on this code path, rather than from any value
+  // carried by the block itself.
+  uint64_t alt_height = block_height;
+  {
+    alt_block_data_t parent_alt;
+    if (m_db->get_alt_block(b.prev_id, &parent_alt, NULL))
+      alt_height = parent_alt.height + 1;
+    else if (m_db->block_exists(b.prev_id))
+      alt_height = m_db->get_block_height(b.prev_id) + 1;
+  }
+  if (alt_height < DIFFICULTY_BLOCKS_COUNT_V4 + 2)
+  {
+    MERROR_VER("Block with id: " << epee::string_tools::pod_to_hex(id) << " rejected as alternative: too close to chain start (height " << alt_height << ")");
     bvc.m_verifivation_failed = true;
     return false;
   }

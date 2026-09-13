@@ -190,7 +190,10 @@ namespace cryptonote
     {
       return true;
     }
-    // PBC CHAIN: No mainnet checkpoints yet (Wownero checkpoints removed)
+    // PBC CHAIN: first mainnet checkpoint (2026-09-12). Height 15000 is far
+    // behind the tip and far ahead of the LWMA window; the hash was verified
+    // identical on three independent production nodes (seed1, seed2, seed4).
+    ADD_CHECKPOINT(15000, "0279cd2ca403b085beffd2418c23afc633ac9656d611c9c6a583ae308cbcde68");
     // Add PBC Chain mainnet checkpoints here when ready
     return true;
   }

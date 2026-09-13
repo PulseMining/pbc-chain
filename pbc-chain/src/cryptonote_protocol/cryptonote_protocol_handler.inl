@@ -614,6 +614,18 @@ namespace cryptonote
     MLOG_P2P_MESSAGE(context << "Received NOTIFY_NEW_FLUFFY_BLOCK " << new_block_hash << " (height "
       << arg.current_blockchain_height << ", " << arg.b.txs.size() << " txes)");
 
+    // PBC: log the source peer of any incoming block that does not extend our
+    // main chain (alternative-chain candidate). This is the only way to know
+    // later who injects such blocks. Not done on the sync path
+    // (handle_response_get_objects): blocks there are validated against the
+    // requested hashes and dropped otherwise, so injection there is impossible.
+    if (new_block.prev_id != m_core.get_blockchain_storage().get_tail_id())
+    {
+      LOG_WARNING_CC(context, "PBC ALT CANDIDATE: block " << new_block_hash
+        << " prev=" << new_block.prev_id
+        << " does not extend the main chain (peer claims chain height " << arg.current_blockchain_height << ")");
+    }
+
     // Pause mining and resume after block verification to prevent wasted mining cycles while
     // validating the next block. Needs more research into if this is a DoS vector or not. Invalid
     // block validation will cause disconnects and bans, so it might not be that bad.

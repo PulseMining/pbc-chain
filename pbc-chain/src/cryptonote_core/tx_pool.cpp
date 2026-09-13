@@ -3266,6 +3266,74 @@ namespace cryptonote
         tpl_ask_changed_deps.insert(pre_ask.deposit_id);
     }
 
+    // ── v8.3.1 GAP-FIX: intra-template effects tracker (miner policy ONLY) ─────
+    // The block-apply phases (blockchain.cpp:7149→9804) apply protocol txs in a
+    // FIXED type order — and the inheritance phase applies types 4/5/6/13 in the
+    // block's own tx order. Two individually-valid txs can therefore invalidate
+    // each other when co-included (the template checks above read chain state at
+    // h-1 only and cannot see the other candidates). Audit 2026-09-11 (91 pairs):
+    // 6 certain gaps (2x3, 3x8, 5x6, 5x8, 7x10, 8x11) + the inheritance-execution
+    // class (3/7/8/10 x execution in the same block). One mechanism covers the
+    // whole family: track, per OBJECT (deposit / principal / seller), the effects
+    // of the txs ALREADY included in this template — evaluation happens at the
+    // bl.tx_hashes append point, i.e. in exact apply order. Skip = delay only
+    // (the tx stays in the pool), never a removal; an over-recorded effect only
+    // costs one block of delay to another tx (conservative direction, never an
+    // inclusion the chain checks would have rejected). Block validation is
+    // UNCHANGED — blockchain.cpp is not touched.
+    struct tpl_effects {
+      std::unordered_set<crypto::hash> claim_made;          // D: a CLAIM(D) is in this template (P3 applies it)
+      std::unordered_set<crypto::hash> withdraw_made;       // D: a TERM_WITHDRAW(D) is in this template (P9)
+      std::unordered_set<crypto::hash> automatch;           // D: an auto-matching LOCK(D) is in this template (P4: implicit claim + owner change + seller credit)
+      std::unordered_map<crypto::hash, crypto::public_key> owner_change; // D -> new owner (TRANSFER P6 or auto-match P4)
+      std::unordered_map<crypto::hash, crypto::public_key> ask_made; // D -> seller of a MARKET_ASK already included in this template (P7 — any ask: list, update or delist)
+      std::unordered_set<crypto::public_key> balance_credited; // seller S: auto-match in template credits pbc_mktpay_<S> (P4)
+      std::unordered_set<crypto::public_key> payout_claimed;   // seller S: a MARKET_PAYOUT_CLAIM(S) is in this template (P8)
+      std::unordered_set<crypto::public_key> request_active_now; // P: an INHERIT_REQUEST(P) is in this template (P1)
+      std::unordered_set<crypto::public_key> lock_made_owners;   // P: a LOCK on a deposit owned by P is in this template (P4 — any lock, matched or not: blockchain.cpp:8831)
+      std::unordered_map<crypto::public_key, bool> inherit_record_exists; // P -> record present AT THIS POSITION (chain-seeded lazily; SETUP included -> true, CANCEL included -> false)
+    } tpl_fx;
+
+    // LOT B: predict inheritance executions firing at THIS block height. Mirror of
+    // the Pass 1 conditions (blockchain.cpp:7805-7835): request_active, height due,
+    // no principal activity since the request, grace window after a previous
+    // attempt. Over-skip only: if Pass 0 closes the request instead of executing,
+    // the affected txs are merely delayed one block — never wrongly included.
+    std::unordered_set<crypto::public_key> tpl_execution_due;
+    {
+      const uint64_t tpl_h = m_blockchain.get_current_blockchain_height(); // block under construction
+      m_blockchain.get_db().for_each_pbc_inherit_record([&](const crypto::public_key& pk, const void* data, size_t data_size) {
+        pbc_inherit_record rec;
+        if (!pbc_unpack_inherit_record(static_cast<const uint8_t*>(data), data_size, rec))
+          return true;
+        if (!rec.request_active) return true;
+        if (tpl_h < rec.request_height + PBC_INHERIT_WAIT_BLOCKS) return true;
+        if (rec.last_activity_height > rec.request_height) return true;
+        uint64_t exec_h = 0;
+        // Key built byte-identically to the file-static pbc_inh_exec_key
+        // (blockchain.cpp:93 — not exported): "pbc_inh_exec_" + hex(principal).
+        const std::string exec_key = std::string("pbc_inh_exec_") + epee::string_tools::pod_to_hex(pk);
+        if (m_blockchain.get_db().get_property_uint64(exec_key, exec_h) && exec_h > 0
+            && tpl_h < exec_h + PBC_INHERIT_SWEEP_CONFIRM_BLOCKS)
+          return true;
+        tpl_execution_due.insert(pk);
+        return true;
+      });
+    }
+
+    // Positional inherit-record presence: chain-seeded on first evaluation of P,
+    // then updated as SETUP/CANCEL are included (the inheritance phase applies in
+    // block tx order = this inclusion order — evaluation here is position-exact).
+    auto tpl_record_exists_at = [&](const crypto::public_key& pk) -> bool {
+      auto it = tpl_fx.inherit_record_exists.find(pk);
+      if (it != tpl_fx.inherit_record_exists.end()) return it->second;
+      uint8_t rec_buf[PBC_INHERIT_RECORD_PACKED_SIZE];
+      size_t rec_sz = sizeof(rec_buf);
+      const bool exists = m_blockchain.get_db().get_pbc_inherit_record(pk, rec_buf, rec_sz);
+      tpl_fx.inherit_record_exists[pk] = exists;
+      return exists;
+    };
+
     for (auto order_it = tx_order.begin(); order_it != tx_order.end(); ++order_it)
     {
       const auto sorted_it = *order_it;   // nom conserve : le corps de boucle est inchange
@@ -3402,6 +3470,29 @@ namespace cryptonote
                   << " skipped in block template — principal record not committed on-chain yet");
             continue;
           }
+          // v8.3.1 GAP-FIX (5x6): a CANCEL for this principal was already included in
+          // this template — the inheritance phase applies in block tx order (= this
+          // inclusion order), so at the request's position the record is gone and the
+          // block would fail ("REQUEST for missing principal record", blockchain.cpp:7321).
+          // Delay only: the request stays in the pool.
+          if (tpl_fx.inherit_record_exists.count(tgt.principal_spend_pubkey)
+              && !tpl_fx.inherit_record_exists[tgt.principal_spend_pubkey])
+          {
+            MGINFO("PBC INHERIT: REQUEST " << sorted_it->second
+                  << " skipped in block template — principal record not present at this position");
+            continue;
+          }
+          // v8.3.1 GAP-FIX (5x8): a LOCK on a deposit owned by this principal is
+          // already in this template — the request applies in P1, the lock would then
+          // fail in P4 ("blocked by active inheritance request", blockchain.cpp:8831).
+          // Delay only.
+          if (tpl_fx.lock_made_owners.count(tgt.principal_spend_pubkey))
+          {
+            MGINFO("PBC INHERIT: REQUEST " << sorted_it->second
+                  << " skipped in block template — lock for this principal in this template");
+            continue;
+          }
+          tpl_fx.request_active_now.insert(tgt.principal_spend_pubkey);
         }
 
         // v8.2.19 FIX-B: re-validate STALE state for the fee=0 protocol txs (types
@@ -3422,6 +3513,16 @@ namespace cryptonote
           if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx)
               && pbc_validate_market_payout_tx(tpl_full_tx, tpl_seller, tpl_payout, tpl_reason) == PBC_MARKET_PAYOUT_VALID)
           {
+            // v8.3.1 GAP-FIX (8x11): an auto-matching LOCK for this seller is already
+            // in this template — it credits pbc_mktpay_<S> in P4
+            // (blockchain.cpp:8927-8930), the claim in P8 would read balance+credit
+            // and fail the exact-equality check (blockchain.cpp:9581). Delay only.
+            if (tpl_fx.balance_credited.count(tpl_seller))
+            {
+              MGINFO("PBC MKTPAY: claim " << sorted_it->second
+                    << " skipped in block template — auto-match for seller in this template seller=" << tpl_seller);
+              continue;
+            }
             uint64_t bal = 0;
             if (!m_blockchain.get_db().get_property_uint64(pbc_mktpay_key(tpl_seller), bal) || bal == 0 || bal != tpl_payout)
             {
@@ -3430,6 +3531,7 @@ namespace cryptonote
                     << " stored=" << bal << " seller=" << tpl_seller << ")");
               continue;
             }
+            tpl_fx.payout_claimed.insert(tpl_seller);
           }
         }
         else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_TERM_WITHDRAW)
@@ -3442,6 +3544,18 @@ namespace cryptonote
           if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx)
               && pbc_validate_withdraw_tx(tpl_full_tx, wdep, wpayout, wkind, wreason) == PBC_WITHDRAW_VALID)
           {
+            // v8.3.1 GAP-FIX (2x3, 3x8, 7x10, 3x12): a CLAIM, an auto-matching LOCK
+            // (implicit claim at apply, blockchain.cpp:8905) or an owner change for
+            // this deposit is already in this template — the withdraw would fail at
+            // apply ("requires prior CLAIM in earlier block", blockchain.cpp:9931,
+            // or owner_sig vs the new owner). Delay only.
+            if (tpl_fx.claim_made.count(wdep) || tpl_fx.automatch.count(wdep)
+                || tpl_fx.owner_change.count(wdep))
+            {
+              MGINFO("PBC PF: TERM_WITHDRAW " << sorted_it->second
+                    << " skipped in block template — deposit already touched in this template (claim/auto-match/transfer) deposit=" << wdep);
+              continue;
+            }
             const uint64_t tpl_h = m_blockchain.get_current_blockchain_height();
             uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
             size_t dep_sz = sizeof(dep_buf);
@@ -3453,7 +3567,11 @@ namespace cryptonote
             else
             {
               pbc_unpack_deposit_record(dep_buf, dep_sz, wrec);
-              if (!(wrec.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
+              // v8.3.1 LOT B (3x12): an inheritance execution transfers owner_key to
+              // the heir in P1 of THIS block (blockchain.cpp:7871-7889) — the
+              // withdraw's owner_sig would then fail at apply. Delay only.
+              if (tpl_execution_due.count(wrec.owner_key)) { stale = true; why = "inheritance_execution_due_this_block"; }
+              else if (!(wrec.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
               else if (wrec.last_claim_height == 0 || !(wrec.last_claim_height < tpl_h)) { stale = true; why = "no_prior_claim_in_earlier_block"; }
               else if (wrec.accumulated_reward == 0) { stale = true; why = "zero_accumulated_reward"; }
               else if (wpayout != wrec.accumulated_reward) { stale = true; why = "payout_mismatch"; }
@@ -3465,6 +3583,7 @@ namespace cryptonote
                     << ") deposit=" << wdep);
               continue;
             }
+            tpl_fx.withdraw_made.insert(wdep);
           }
         }
         else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_CLAIM)
@@ -3475,6 +3594,17 @@ namespace cryptonote
           if (parse_and_validate_tx_from_blob(txblob, tpl_full_tx)
               && pbc_validate_claim_tx(tpl_full_tx, cdep, creason) == PBC_CLAIM_VALID)
           {
+            // v8.3.1 GAP-FIX (2x3): a TERM_WITHDRAW for this deposit is already in
+            // this template — the claim applies in P3, the withdraw would then fail
+            // in P9 (last_claim_height == block, blockchain.cpp:9931). The claim is
+            // delayed (it keeps accruing); the withdraw — whose payout equals the
+            // CURRENT accumulated reward — stays valid and mines. Delay only.
+            if (tpl_fx.withdraw_made.count(cdep))
+            {
+              MGINFO("PBC TD-5: CLAIM " << sorted_it->second
+                    << " skipped in block template — withdraw for same deposit in this template deposit=" << cdep);
+              continue;
+            }
             const uint64_t tpl_h = m_blockchain.get_current_blockchain_height();
             uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
             size_t dep_sz = sizeof(dep_buf);
@@ -3509,6 +3639,7 @@ namespace cryptonote
                     << ") deposit=" << cdep);
               continue;
             }
+            tpl_fx.claim_made.insert(cdep);
           }
         }
 
@@ -3543,8 +3674,29 @@ namespace cryptonote
               else
               {
                 pbc_unpack_deposit_record(dep_buf, dep_sz, xrec);
+                // v8.3.1 GAP-FIX (5x8-famille, 7x12): an INHERIT_REQUEST for the owner
+                // is in this template (applies P1 → transfer rejected at apply,
+                // blockchain.cpp:9141), or an inheritance execution is due for the
+                // owner at THIS height (owner_key moves to the heir in P1 →
+                // owner_sig fails at apply, :9155). Delay only.
+                if (tpl_fx.request_active_now.count(xrec.owner_key)) { stale = true; why = "inherit_request_for_owner_in_this_template"; }
+                else if (tpl_execution_due.count(xrec.owner_key)) { stale = true; why = "inheritance_execution_due_this_block"; }
+                // v8.3.1 GAP-FIX (7x10, sens inverse — trou démontré expérimentalement
+                // 2026-09-12 sur la v2 : ask à fee ratio supérieur évaluée EN PREMIER,
+                // la v2 ne voyait rien, bloc rejeté :9361): a MARKET_ASK by the CURRENT
+                // (h-1) owner is already in this template. The transfer applies in P6
+                // BEFORE the ask in P7 (blockchain.cpp:9084 → :9319) regardless of
+                // block order — the ask would then fail ("seller is not deposit
+                // owner", :9361; same check for list, update and delist). The
+                // later-evaluated tx is delayed: the transfer stays in the pool and
+                // re-mines next block, once the ask state has settled (ask applied
+                // or expired; the collateral lock stays ACTIVE). Delay only.
+                else if (tpl_fx.ask_made.count(xfield.deposit_id)
+                    && tpl_fx.ask_made[xfield.deposit_id] == xrec.owner_key) { stale = true; why = "ask_update_in_this_template"; }
                 // Owner may have changed (a competing transfer mined elsewhere): re-verify
                 // the consensus V2 signature against the CURRENT owner_key.
+                else
+                {
                 const crypto::hash xmh = pbc_build_transfer_deposit_msg_hash(xfield.deposit_id,
                     xfield.new_owner_spend_pubkey, xfield.lock_id, xfield.expected_dep_idx, xfield.expected_fee_idx);
                 if (!crypto::check_signature(xmh, xrec.owner_key, xsig.sig)) { stale = true; why = "owner_sig_stale"; }
@@ -3567,6 +3719,13 @@ namespace cryptonote
                     if (!pbc_verify_lock_payout_output(tpl_full_tx, lrec.amount, payout_fail)) { stale = true; why = "payout_not_verifiable"; }
                   }
                 }
+                }
+                // v8.3.1 GAP-FIX: the transfer applies in P6 and changes owner_key —
+                // later candidates on this deposit (MARKET_ASK by the old owner,
+                // TERM_WITHDRAW, LOCK) must see it. Recorded only when the transfer
+                // fields were parsed and all checks passed.
+                if (!stale)
+                  tpl_fx.owner_change[xfield.deposit_id] = xfield.new_owner_spend_pubkey;
               }
             }
             if (stale)
@@ -3605,7 +3764,20 @@ namespace cryptonote
               else
               {
                 pbc_unpack_deposit_record(dep_buf, dep_sz, ldep);
-                if (!(ldep.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
+                // v8.3.1 GAP-FIX (3x8, 5x8, 7x10-owner, 8x11, 8x12): a TERM_WITHDRAW
+                // for this deposit (the auto-match's implicit claim at apply,
+                // blockchain.cpp:8905, would set last_claim_height == block →
+                // withdraw rejected :9931), an INHERIT_REQUEST or an execution for
+                // the owner (lock rejected :8831 / seller mismatch :8718), an owner
+                // change, or a MARKET_PAYOUT_CLAIM for this seller (the auto-match
+                // credit :8927-8930 breaks the claim's exact equality :9581) is
+                // already in this template. Delay only — the lock stays in the pool.
+                if (tpl_fx.withdraw_made.count(lfield.deposit_id)) { stale = true; why = "withdraw_for_deposit_in_this_template"; }
+                else if (tpl_fx.request_active_now.count(ldep.owner_key)) { stale = true; why = "inherit_request_for_owner_in_this_template"; }
+                else if (tpl_execution_due.count(ldep.owner_key)) { stale = true; why = "inheritance_execution_due_this_block"; }
+                else if (tpl_fx.owner_change.count(lfield.deposit_id)) { stale = true; why = "owner_change_in_this_template"; }
+                else if (tpl_fx.payout_claimed.count(lfield.seller_pubkey)) { stale = true; why = "payout_claim_for_seller_in_this_template"; }
+                else if (!(ldep.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
                 else if (ldep.owner_key != lfield.seller_pubkey) { stale = true; why = "seller_mismatch"; }
                 else
                 {
@@ -3637,6 +3809,30 @@ namespace cryptonote
                           || lfield.expiry_height > tpl_h + PBC_LOCK_MAX_DURATION) { stale = true; why = "expiry_out_of_range"; }
                     }
                   }
+                }
+              }
+              // v8.3.1 GAP-FIX: record effects for later candidates, only when the
+              // lock fields were parsed and every check passed (ldep is in scope
+              // here, inside the parse guard). Any lock blocks an INHERIT_REQUEST
+              // for the owner (P1 before P4, blockchain.cpp:8831).
+              if (!stale)
+              {
+                tpl_fx.lock_made_owners.insert(ldep.owner_key);
+                // Auto-match is certain at apply when an active ask exists on chain,
+                // the amount covers it, and no ask change is pending (tpl_ask_changed_deps
+                // already skipped the lock in that case) — the apply reads the same
+                // property in the batch (blockchain.cpp:8872-8876). Effects of the
+                // auto-match in P4: implicit claim, owner change to the buyer, seller
+                // balance credit (:8898, :8927-8942).
+                uint64_t am_ask_price = 0;
+                const std::string am_ask_key = std::string("pbc_ask_") + epee::string_tools::pod_to_hex(lfield.deposit_id) + "_price";
+                if (m_blockchain.get_db().get_property_uint64(am_ask_key, am_ask_price)
+                    && am_ask_price > 0 && lfield.amount >= am_ask_price
+                    && !tpl_ask_changed_deps.count(lfield.deposit_id))
+                {
+                  tpl_fx.automatch.insert(lfield.deposit_id);
+                  tpl_fx.owner_change[lfield.deposit_id] = lfield.buyer_pubkey;
+                  tpl_fx.balance_credited.insert(lfield.seller_pubkey);
                 }
               }
               }
@@ -3702,8 +3898,23 @@ namespace cryptonote
               else
               {
                 pbc_unpack_deposit_record(dep_buf, dep_sz, adep);
-                if (adep.owner_key != afield.seller_pubkey) { stale = true; why = "seller_not_owner"; }
+                // v8.3.1 GAP-FIX (7x10, 10x12): a TRANSFER or auto-matching LOCK for
+                // this deposit is already in this template (applies P6/P4, changes
+                // owner_key) — an ask by the OLD owner fails at apply
+                // ("seller is not deposit owner", blockchain.cpp:9359). An ask by the
+                // NEW owner stays includable in the same block (re-list by the buyer).
+                // Execution due for the owner: same outcome. Delay only.
+                if (tpl_fx.owner_change.count(afield.deposit_id)
+                    && tpl_fx.owner_change[afield.deposit_id] != afield.seller_pubkey) { stale = true; why = "owner_change_in_this_template"; }
+                else if (tpl_execution_due.count(adep.owner_key)) { stale = true; why = "inheritance_execution_due_this_block"; }
+                else if (adep.owner_key != afield.seller_pubkey) { stale = true; why = "seller_not_owner"; }
                 else if (afield.ask_price > 0 && adep.unlock_height <= tpl_h) { stale = true; why = "deposit_mature"; }
+                // v8.3.1 GAP-FIX (7x10, sens inverse): remember the seller of an ask
+                // INCLUDED in this template (fields parsed, all checks passed) — a
+                // TRANSFER for this deposit evaluated later must be delayed if the
+                // seller is the current owner (see the transfer block guard).
+                if (!stale)
+                  tpl_fx.ask_made[afield.deposit_id] = afield.seller_pubkey;
               }
             }
             if (stale)
@@ -3738,6 +3949,47 @@ namespace cryptonote
                     << " skipped in block template — " << treason);
               continue;
             }
+          }
+        }
+        // v8.3.1 GAP-FIX: positional inherit-record tracking for types 4/6. The
+        // inheritance phase applies types 4/5/6/13 in block tx order = this
+        // inclusion order (blockchain.cpp:7152) — recording setup/cancel here makes
+        // tpl_record_exists_at exact at any later position in this template.
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_INHERIT_SETUP)
+        {
+          std::vector<tx_extra_field> sf;
+          tx_extra_pbc_owner_key sowner{};
+          if (parse_tx_extra(tpl_pfx.extra, sf) && find_tx_extra_field_by_type(sf, sowner))
+          {
+            // SETUP writes (or overwrites) the record and resets the cycle
+            // (request_active=0, blockchain.cpp:7285-7298): a later REQUEST at this
+            // position finds the record present; no execution can fire for this
+            // principal in this block.
+            tpl_fx.inherit_record_exists[sowner.owner_spend_pubkey] = true;
+            tpl_fx.request_active_now.erase(sowner.owner_spend_pubkey);
+            tpl_execution_due.erase(sowner.owner_spend_pubkey);
+          }
+        }
+        else if (tpl_parsed && tpl_type_found && pbc_type.type == PBC_TX_TYPE_INHERIT_CANCEL)
+        {
+          std::vector<tx_extra_field> cf2;
+          tx_extra_pbc_owner_key cowner{};
+          if (parse_tx_extra(tpl_pfx.extra, cf2) && find_tx_extra_field_by_type(cf2, cowner))
+          {
+            // A CANCEL whose record is not present AT THIS POSITION (already removed
+            // by an earlier cancel in this template, or never created and no setup
+            // included before it) would fail at apply ("CANCEL for missing principal
+            // record", blockchain.cpp:7425). Delay only — the tx stays in the pool.
+            if (!tpl_record_exists_at(cowner.owner_spend_pubkey))
+            {
+              MGINFO("PBC INHERIT: CANCEL " << sorted_it->second
+                    << " skipped in block template — principal record not present at this position");
+              continue;
+            }
+            // The cancel applies: record removed (blockchain.cpp:7486) — and a
+            // cancel in this block prevents any execution for this principal (:7150).
+            tpl_fx.inherit_record_exists[cowner.owner_spend_pubkey] = false;
+            tpl_execution_due.erase(cowner.owner_spend_pubkey);
           }
         }
       }
