@@ -43,6 +43,7 @@
 
 #include <locale.h>
 #include <thread>
+#include <chrono>
 #include <iostream>
 #include <iomanip>
 #include <sstream>
@@ -7608,8 +7609,63 @@ bool simple_wallet::term_deposit(const std::vector<std::string> &args_)
       return true;
     }
 
-    // Create deposit TX
-    auto ptx = m_wallet->create_term_deposit_tx(amount, tier, 0);
+    // Create deposit TX — exact-fit flow: the deposit transaction spends a
+    // single pre-sized output as its sole input, so no sender change output
+    // appears in it and only the deposit itself carries the deposit
+    // unlock_time. Step 1 (skipped when a suitable output already exists):
+    // self-transfer sizing an output of amount + the deposit fee.
+    const uint64_t fee_est = m_wallet->pbc_estimate_exact_deposit_fee(0);
+    const uint64_t fee_min = fee_est;
+    const uint64_t max_fee = 2 * fee_est;
+    size_t exact_idx = 0;
+    if (!m_wallet->pbc_find_exact_deposit_output(amount, fee_min, max_fee, exact_idx, false))
+    {
+      success_msg_writer() << tr("Step 1/2: preparing an exactly-sized output (self-transfer of ")
+          << cryptonote::print_money(amount + fee_est) << tr(" PBC)...");
+      std::vector<cryptonote::tx_destination_entry> pdsts;
+      cryptonote::tx_destination_entry pde;
+      pde.addr = m_wallet->get_account().get_keys().m_account_address;
+      pde.amount = amount + fee_est;
+      pde.is_subaddress = false;
+      pde.is_integrated = false;
+      pdsts.push_back(pde);
+      std::vector<tools::wallet2::pending_tx> prep_ptxs = m_wallet->create_transactions_2(
+          pdsts, m_wallet->adjust_mixin(0), m_wallet->adjust_priority(0), {}, 0, {}, {});
+      if (prep_ptxs.size() != 1)
+      {
+        fail_msg_writer() << tr("Preparation did not produce a single transaction (unconfirmed funds still locked?)");
+        return true;
+      }
+      m_wallet->commit_tx(prep_ptxs[0]);
+      success_msg_writer(true) << tr("Preparation sent, TX: ") << cryptonote::get_transaction_hash(prep_ptxs[0].tx);
+
+      // Wait for the pre-sized output to unlock (spendable age).
+      success_msg_writer() << tr("Waiting for the prepared output to unlock...");
+      bool ready = false;
+      for (int round = 0; round < 120 && !ready; ++round)
+      {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        uint64_t fetched_blocks = 0;
+        bool received_money = false;
+        try { m_wallet->refresh(m_wallet->is_trusted_daemon(), 0, fetched_blocks, received_money, true, false); } catch (...) {}
+        ready = m_wallet->pbc_find_exact_deposit_output(amount, fee_min, max_fee, exact_idx, false);
+        if (!ready && (round % 6) == 5)
+          success_msg_writer() << tr("  still waiting for confirmations...");
+      }
+      if (!ready)
+      {
+        fail_msg_writer() << tr("The prepared output is still locked. Run this command again once it has "
+            "unlocked — the funds stay available in the wallet meanwhile.");
+        return true;
+      }
+    }
+    else
+    {
+      success_msg_writer() << tr("An exactly-sized output already exists — step 1 skipped.");
+    }
+
+    // Step 2/2: the deposit itself, spending the pre-sized output alone.
+    auto ptx = m_wallet->create_term_deposit_tx_exact(amount, tier, 0, exact_idx, fee_min, max_fee);
 
     // Commit
     m_wallet->commit_tx(ptx);

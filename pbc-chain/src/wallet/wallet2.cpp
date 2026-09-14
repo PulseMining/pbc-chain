@@ -7466,6 +7466,42 @@ std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> wallet2::
   return amount_per_subaddr;
 }
 //----------------------------------------------------------------------------------------------------
+// PBC: sum of the change outputs of this wallet's own term deposit
+// transactions that are still locked by the deposit's unlock_time.
+// An output is counted when all of the following hold:
+//   - not spent;
+//   - still locked (is_transfer_unlocked false);
+//   - its parent transaction carries the TERM_DEPOSIT tag (0x50, type 1) in
+//     tx_extra. Coinbase (vesting) transactions never carry that tag, so
+//     vesting outputs are structurally excluded. The deposit output itself
+//     (zero-mask commitment) is skipped at scan time and never appears in
+//     m_transfers — only the change outputs of a deposit transaction do.
+void wallet2::pbc_pending_change(uint64_t& amount, uint64_t& unlock_height_max, uint64_t& count)
+{
+  amount = 0;
+  unlock_height_max = 0;
+  count = 0;
+  for (const transfer_details& td : m_transfers)
+  {
+    if (is_spent(td, false))
+      continue;
+    if (is_transfer_unlocked(td))
+      continue;
+    std::vector<cryptonote::tx_extra_field> fields;
+    if (!cryptonote::parse_tx_extra(td.m_tx.extra, fields))
+      continue;
+    cryptonote::tx_extra_pbc_tx_type pbc_type;
+    if (!cryptonote::find_tx_extra_field_by_type(fields, pbc_type))
+      continue;
+    if (pbc_type.type != PBC_TX_TYPE_TERM_DEPOSIT)
+      continue;
+    amount += td.amount();
+    ++count;
+    if (td.m_tx.unlock_time > unlock_height_max)
+      unlock_height_max = td.m_tx.unlock_time;
+  }
+}
+//----------------------------------------------------------------------------------------------------
 uint64_t wallet2::balance_all(bool strict) const
 {
   uint64_t r = 0;
@@ -13152,6 +13188,307 @@ wallet2::pending_tx wallet2::create_term_deposit_tx(uint64_t amount, uint8_t tie
 
   LOG_PRINT_L1("create_term_deposit_tx: amount=" << amount << " tier=" << (int)tier
       << " unlock_height=" << unlock_height << " txid=" << get_transaction_hash(tx));
+
+  return ptx;
+}
+//----------------------------------------------------------------------------------------------------
+// PBC: fee estimate for an exact-fit deposit transaction (one input, two
+// outputs, the deposit tx_extra with the owner proof fields). Used to size
+// the pre-made input of the exact-fit deposit flow.
+uint64_t wallet2::pbc_estimate_exact_deposit_fee(uint32_t priority)
+{
+  const bool use_rct = use_fork_rules(4, 0);
+  const bool bulletproof = use_fork_rules(get_bulletproof_fork(), 0);
+  const bool bulletproof_plus = use_fork_rules(get_bulletproof_plus_fork(), 0);
+  const bool bulletproof_plus_full_commit = use_fork_rules(get_bulletproof_plus_full_commit_fork(), 0);
+  const bool clsag = use_fork_rules(get_clsag_fork(), 0);
+  const bool use_view_tags = use_fork_rules(get_view_tag_fork(), 0);
+  // Deposit tx_extra: tags 0x50/0x51 + owner proof tags 0x54/0x55 + tx public
+  // key. 220 bytes covers every amount/unlock_height varint width.
+  const size_t extra_size = 220;
+  const uint64_t mixin = adjust_mixin(0);
+  const uint64_t base_fee = get_base_fee(priority);
+  const uint64_t fee_quantization_mask = get_fee_quantization_mask();
+  const size_t weight = estimate_tx_weight(use_rct, 1, mixin, 2, extra_size,
+      bulletproof, clsag, bulletproof_plus, bulletproof_plus_full_commit, use_view_tags);
+  return calculate_fee_from_weight(base_fee, weight, fee_quantization_mask);
+}
+//----------------------------------------------------------------------------------------------------
+// PBC: find a spendable output whose amount falls in
+// [amount + min_fee, amount + max_fee] — the pre-sized input of an exact-fit
+// deposit. With include_locked, outputs that only fail the unlock check also
+// match (used to tell "present but not yet unlocked" from "absent"). When
+// several outputs match, the smallest one wins (lowest fee).
+bool wallet2::pbc_find_exact_deposit_output(uint64_t amount, uint64_t min_fee, uint64_t max_fee, size_t& idx, bool include_locked)
+{
+  const uint64_t low = amount + min_fee;
+  const uint64_t high = amount + max_fee;
+  if (high < low) // overflow guard
+    return false;
+  bool found = false;
+  uint64_t best = 0;
+  for (size_t i = 0; i < m_transfers.size(); ++i)
+  {
+    const transfer_details& td = m_transfers[i];
+    if (td.m_spent || td.m_frozen || td.m_key_image_partial)
+      continue;
+    if (td.m_subaddr_index.major != 0 || !td.is_rct())
+      continue;
+    if (td.amount() < low || td.amount() > high)
+      continue;
+    if (!is_transfer_unlocked(td) && !include_locked)
+      continue;
+    if (!found || td.amount() < best)
+    {
+      found = true;
+      best = td.amount();
+      idx = i;
+    }
+  }
+  return found;
+}
+//----------------------------------------------------------------------------------------------------
+// PBC: build a term deposit spending a single pre-sized output, so that no
+// change output is sent back to the sender in the deposit transaction. The
+// remainder of the sole input becomes the fee; a zero-amount output to a
+// freshly generated address keeps the transaction at two outputs as required
+// for version 2 transactions. Only the deposit output itself therefore
+// carries the deposit unlock_time.
+wallet2::pending_tx wallet2::create_term_deposit_tx_exact(uint64_t amount, uint8_t tier, uint32_t priority, size_t exact_transfer_idx, uint64_t min_fee, uint64_t max_fee)
+{
+  // ── Step 1: validations ──
+  THROW_WALLET_EXCEPTION_IF(tier > 4, error::wallet_internal_error, "Invalid tier: must be 0..4");
+  THROW_WALLET_EXCEPTION_IF(amount < PBC_MIN_DEPOSIT_AMOUNT, error::wallet_internal_error,
+      "Deposit amount below minimum " + std::to_string(PBC_MIN_DEPOSIT_AMOUNT));
+  THROW_WALLET_EXCEPTION_IF(exact_transfer_idx >= m_transfers.size(), error::wallet_internal_error,
+      "exact-fit transfer index out of range");
+
+  // ── Step 2: current height ──
+  std::string err;
+  uint64_t height = get_daemon_blockchain_height(err);
+  THROW_WALLET_EXCEPTION_IF(!err.empty(), error::wallet_internal_error, "Failed to get height: " + err);
+
+  // ── Step 3: unlock_height ──
+  uint64_t tier_blks = pbc_get_tier_blocks(tier);
+  THROW_WALLET_EXCEPTION_IF(tier_blks == 0, error::wallet_internal_error, "Invalid tier blocks");
+  // Same safety margin as create_term_deposit_tx: the consensus rule requires
+  // unlock_height >= including_block_height + tier_blocks.
+  constexpr uint64_t PBC_DEPOSIT_UNLOCK_SAFETY_MARGIN = 120;
+  uint64_t unlock_height = height + tier_blks + PBC_DEPOSIT_UNLOCK_SAFETY_MARGIN;
+
+  // ── Step 4: tx_extra ──
+  std::vector<uint8_t> extra;
+  // Tag 0x50 — PBC TX type
+  {
+    cryptonote::tx_extra_pbc_tx_type tx_type;
+    tx_type.type = PBC_TX_TYPE_TERM_DEPOSIT;
+    cryptonote::tx_extra_field field = tx_type;
+    std::ostringstream oss;
+    binary_archive<true> ar(oss);
+    bool r = ::do_serialize(ar, field);
+    THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to serialize pbc_tx_type");
+    std::string s = oss.str();
+    extra.insert(extra.end(), s.begin(), s.end());
+  }
+  // Tag 0x51 — deposit info
+  {
+    cryptonote::tx_extra_pbc_deposit_info info;
+    info.amount = amount;
+    info.unlock_height = unlock_height;
+    info.tier = tier;
+    cryptonote::tx_extra_field field = info;
+    std::ostringstream oss;
+    binary_archive<true> ar(oss);
+    bool r = ::do_serialize(ar, field);
+    THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to serialize pbc_deposit_info");
+    std::string s = oss.str();
+    extra.insert(extra.end(), s.begin(), s.end());
+  }
+
+  // ── Step 5: destinations — deposit to self ──
+  std::vector<cryptonote::tx_destination_entry> dsts;
+  cryptonote::tx_destination_entry de;
+  de.addr = m_account.get_keys().m_account_address;
+  de.amount = amount;
+  de.is_subaddress = false;
+  de.is_integrated = false;
+  dsts.push_back(de);
+
+  // ── Step 6: validate the sole input ──
+  const transfer_details& exact_td = m_transfers[exact_transfer_idx];
+  THROW_WALLET_EXCEPTION_IF(exact_td.m_spent || exact_td.m_frozen, error::wallet_internal_error,
+      "exact-fit output is not available");
+  THROW_WALLET_EXCEPTION_IF(exact_td.m_key_image_partial, error::wallet_internal_error,
+      "exact-fit output has a partial key image");
+  THROW_WALLET_EXCEPTION_IF(!exact_td.is_rct(), error::wallet_internal_error,
+      "exact-fit output is not a RingCT output");
+  THROW_WALLET_EXCEPTION_IF(exact_td.m_subaddr_index.major != 0, error::wallet_internal_error,
+      "exact-fit output is not on account 0");
+  THROW_WALLET_EXCEPTION_IF(!is_transfer_unlocked(exact_td), error::wallet_internal_error,
+      "exact-fit output is not unlocked yet");
+  THROW_WALLET_EXCEPTION_IF(exact_td.amount() <= amount, error::wallet_internal_error,
+      "exact-fit output does not cover the deposit amount");
+  const uint64_t fee_input = exact_td.amount() - amount;
+  THROW_WALLET_EXCEPTION_IF(fee_input < min_fee || fee_input > max_fee, error::wallet_internal_error,
+      "exact-fit output is outside the fee window");
+
+  // ── Step 7: freeze every other transfer for the duration of the build so
+  // the input selection picks the pre-sized output alone. The freeze is
+  // lifted on every exit path below. ──
+  std::vector<size_t> frozen_here;
+  for (size_t i = 0; i < m_transfers.size(); ++i)
+  {
+    if (i != exact_transfer_idx && !m_transfers[i].m_frozen)
+    {
+      m_transfers[i].m_frozen = true;
+      frozen_here.push_back(i);
+    }
+  }
+  struct freeze_restore_guard {
+    wallet2* self; const std::vector<size_t>& idxs;
+    ~freeze_restore_guard() { for (size_t i : idxs) self->m_transfers[i].m_frozen = false; }
+  } restore_guard{this, frozen_here};
+
+  // ── Step 8: single build attempt with the sole input. There is no
+  // fallback that would add further inputs — a failure is reported as such. ──
+  const uint64_t mixin = adjust_mixin(0);
+  const uint32_t adj_priority = adjust_priority(priority);
+  std::vector<pending_tx> ptx_vector = create_transactions_2(dsts, mixin, adj_priority, extra, 0, {}, {});
+  THROW_WALLET_EXCEPTION_IF(ptx_vector.size() != 1, error::wallet_internal_error,
+      "exact-fit deposit build did not produce a single transaction");
+
+  pending_tx ptx = ptx_vector[0];
+  auto cd = ptx.construction_data;
+
+  // ── Step 9: outputs — the deposit at index 0 (zero-mask commitment, as
+  // the deposit rules require) and a zero-amount output to a freshly
+  // generated address. No sender change output is added: the remainder of
+  // the sole input becomes the fee, so no wallet output other than the
+  // deposit itself carries the deposit unlock_time. ──
+  cryptonote::tx_destination_entry zero_de;
+  {
+    cryptonote::account_base dummy;
+    dummy.generate();
+    zero_de.addr = dummy.get_keys().m_account_address;
+    zero_de.amount = 0;
+    zero_de.is_subaddress = false;
+    zero_de.is_integrated = false;
+  }
+  cd.splitted_dsts.clear();
+  cd.splitted_dsts.push_back(de);
+  cd.splitted_dsts.push_back(zero_de);
+  cd.change_dts = zero_de;
+
+  // ── Step 9b: TD-8 owner proof — sign with spend key, add to tx_extra ──
+  // msg = H(PBC_DEPOSIT_OWNER_MSG_PREFIX || key_images || amount || unlock_height || tier)
+  {
+    const crypto::public_key& spend_pub = m_account.get_keys().m_account_address.m_spend_public_key;
+    const crypto::secret_key& spend_sec = m_account.get_keys().m_spend_secret_key;
+
+    // Build deterministic message from key images (sorted) + deposit params
+    std::vector<crypto::key_image> key_images;
+    key_images.reserve(ptx.tx.vin.size());
+    for (const auto& vin_entry : ptx.tx.vin)
+    {
+      if (vin_entry.type() == typeid(cryptonote::txin_to_key))
+      {
+        const auto& in = boost::get<cryptonote::txin_to_key>(vin_entry);
+        key_images.push_back(in.k_image);
+      }
+    }
+    std::sort(key_images.begin(), key_images.end(),
+      [](const crypto::key_image& a, const crypto::key_image& b)
+      {
+        return std::memcmp(&a, &b, sizeof(crypto::key_image)) < 0;
+      });
+
+    std::string msg_data(PBC_DEPOSIT_OWNER_MSG_PREFIX);
+    for (const auto& ki : key_images)
+      msg_data.append(reinterpret_cast<const char*>(&ki), sizeof(crypto::key_image));
+
+    {
+      uint64_t le_amount = amount;
+      uint64_t le_unlock = unlock_height;
+      uint8_t  le_tier   = tier;
+      msg_data.append(reinterpret_cast<const char*>(&le_amount), 8);
+      msg_data.append(reinterpret_cast<const char*>(&le_unlock), 8);
+      msg_data.append(reinterpret_cast<const char*>(&le_tier),   1);
+    }
+    crypto::hash msg_hash = crypto::cn_fast_hash(msg_data.data(), msg_data.size());
+
+    crypto::signature owner_sig;
+    crypto::generate_signature(msg_hash, spend_pub, spend_sec, owner_sig);
+
+    // Serialize tag 0x54 (owner_key) into cd.extra
+    {
+      cryptonote::tx_extra_pbc_owner_key owner_field;
+      owner_field.owner_spend_pubkey = spend_pub;
+      cryptonote::tx_extra_field field = owner_field;
+      std::ostringstream oss;
+      binary_archive<true> ar(oss);
+      bool r = ::do_serialize(ar, field);
+      THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to serialize pbc_owner_key");
+      std::string s = oss.str();
+      cd.extra.insert(cd.extra.end(), s.begin(), s.end());
+    }
+    // Serialize tag 0x55 (owner_sig) into cd.extra
+    {
+      cryptonote::tx_extra_pbc_owner_sig sig_field;
+      sig_field.sig = owner_sig;
+      cryptonote::tx_extra_field field = sig_field;
+      std::ostringstream oss;
+      binary_archive<true> ar(oss);
+      bool r = ::do_serialize(ar, field);
+      THROW_WALLET_EXCEPTION_IF(!r, error::wallet_internal_error, "Failed to serialize pbc_owner_sig");
+      std::string s = oss.str();
+      cd.extra.insert(cd.extra.end(), s.begin(), s.end());
+    }
+
+    LOG_PRINT_L1("TD-8: owner_key=" << spend_pub << " sig added to tx_extra");
+  }
+
+  // ── Step 10: rebuild with unlock_time = unlock_height (before the RingCT
+  // signature), deposit at vout[0], no output shuffling ──
+  crypto::secret_key tx_key;
+  std::vector<crypto::secret_key> additional_tx_keys;
+  rct::RCTConfig rct_config = cd.rct_config;
+
+  cryptonote::transaction tx;
+  bool r = cryptonote::construct_tx_and_get_tx_key(
+      m_account.get_keys(), m_subaddresses,
+      cd.sources, cd.splitted_dsts, cd.change_dts.addr,
+      cd.extra, tx, tx_key, additional_tx_keys,
+      true,             // rct
+      rct_config,
+      cd.use_view_tags,
+      false,            // shuffle_outs = false
+      0,                // pbc_force_zero_mask_index = 0
+      unlock_height     // unlock_time = unlock_height (before the RingCT signature)
+  );
+  THROW_WALLET_EXCEPTION_IF(!r, error::tx_not_constructed, cd.sources, cd.splitted_dsts, m_nettype);
+
+  // Update the pending_tx
+  ptx.tx = tx;
+  ptx.tx_key = tx_key;
+  ptx.additional_tx_keys = additional_tx_keys;
+  ptx.construction_data.unlock_time = unlock_height;
+  // The remainder of the sole input is the fee.
+  ptx.fee = fee_input;
+
+  // Rebuild key_images string (same pattern as transfer_selected_rct)
+  std::string key_images;
+  bool all_are_txin_to_key = std::all_of(tx.vin.begin(), tx.vin.end(), [&](const txin_v& s_e) -> bool
+  {
+    CHECKED_GET_SPECIFIC_VARIANT(s_e, const txin_to_key, in, false);
+    key_images += boost::to_string(in.k_image) + " ";
+    return true;
+  });
+  THROW_WALLET_EXCEPTION_IF(!all_are_txin_to_key && !is_pbc_withdraw_tx(tx), error::unexpected_txin_type, tx);
+  ptx.key_images = key_images;
+
+  LOG_PRINT_L1("create_term_deposit_tx_exact: amount=" << amount << " tier=" << (int)tier
+      << " fee=" << fee_input << " unlock_height=" << unlock_height
+      << " txid=" << get_transaction_hash(tx));
 
   return ptx;
 }

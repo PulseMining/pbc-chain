@@ -2100,12 +2100,13 @@ async function loadDashboard() {
   // Check inheritance alerts in background (non-blocking)
   _checkInheritAlert().catch(_rpcErr('inherit_alert'));
   try {
-    const [bal, heightRes, stats, apy, pools] = await Promise.all([
+    const [bal, heightRes, stats, apy, pools, pendingChange] = await Promise.all([
       rpc('get_balance'),
       rpc('get_height'),
       rpc('get_deposit_stats').catch(_rpcErr('get_deposit_stats')),
       rpc('get_deposit_apy', { amount: 100000000000000 }).catch(_rpcErr('get_deposit_apy')),
       daemon_rpc('get_pbc_pool_balances').catch(_rpcErr('get_pbc_pool_balances')),
+      rpc('pbc_pending_change').catch(_rpcErr('pbc_pending_change')),
     ]);
 
     const height = heightRes.height || 0;
@@ -2237,6 +2238,18 @@ async function loadDashboard() {
         availSub += `<br><span style="color:var(--text-muted);font-size:11px">excl. ${fmtShort(dep_claimed)} interest ready to withdraw</span>`;
       if (dep_locked > 0)
         availSub += `<br><span style="color:var(--text-muted);font-size:11px">excl. ${fmtShort(dep_locked)} principal in deposits</span>`;
+      // Pending change: change outputs of the wallet's own term deposits still
+      // locked by the deposits' unlock_time. The money belongs to the user, it
+      // is only unusable until the term. Last line of the card, hidden when 0.
+      if (pendingChange && typeof pendingChange.amount === 'number' && pendingChange.count > 0 && pendingChange.amount > 0) {
+        let pcTip = 'change from your own term deposits — yours, locked until the deposit term';
+        if (pendingChange.unlock_height_max > 0 && height > 0) {
+          const spbPC = await effectiveSecPerBlock(height);
+          const etaPC = new Date(Date.now() + Math.max(0, pendingChange.unlock_height_max - height) * spbPC * 1000);
+          pcTip = 'unlocks at block ' + pendingChange.unlock_height_max + ' (~' + etaPC.toLocaleString() + ')';
+        }
+        availSub += `<br><span style="color:var(--text-muted);font-size:11px" title="${pcTip}">(pending change: ${fmtShort(pendingChange.amount)})</span>`;
+      }
       document.getElementById('d-avail-pct').innerHTML = availSub;
     }
     document.getElementById('d-vest-pct').textContent = fmtPct(pVest) + ' of patrimony';
@@ -3342,6 +3355,38 @@ function closeDepositModal() {
   if (_depBalRefreshInterval) { clearInterval(_depBalRefreshInterval); _depBalRefreshInterval = null; }
 }
 
+// PBC exact-fit deposit: two wallet-RPC steps driven here (the wallet keeps
+// no state between them). Step 1 sizes a wallet output at amount + the
+// deposit fee (skipped when one already exists); step 2 spends it as the
+// sole input, so no change output of the sender carries the deposit
+// unlock_time. Error strings checked below are emitted by
+// wallet_rpc_server.cpp (on_make_term_deposit, exact_fit branch).
+async function pbcExactDeposit(amount, tier, idemKey, phaseCb) {
+  const say = (t) => { if (phaseCb) phaseCb(t); };
+  say('Preparing…');
+  await rpc('pbc_prepare_term_deposit', { amount, tier, idempotency_key: idemKey ? idemKey + '-prep' : '' });
+  const attempt = () => rpc('make_term_deposit', { amount, tier, exact_fit: true, idempotency_key: idemKey });
+  let lastErr = null;
+  for (let i = 0; i < 90; i++) {
+    say(i === 0 ? 'Depositing…' : 'Confirming preparation… (' + i + ')');
+    try {
+      return await attempt();
+    } catch (e) {
+      const m = (e.message || '').toLowerCase();
+      if (m.includes('exact-fit output not ready')) { lastErr = e; await sleep(5000); continue; }
+      if (m.includes('exact-fit output not found')) {
+        // The prepared output is gone (wallet restarted, or background
+        // maintenance absorbed it after the shield expired): re-run step 1,
+        // then keep waiting. No funds are ever locked by this flow.
+        await rpc('pbc_prepare_term_deposit', { amount, tier, idempotency_key: idemKey ? idemKey + '-prep2' : '' });
+        lastErr = e; await sleep(5000); continue;
+      }
+      throw e;
+    }
+  }
+  throw (lastErr || new Error('deposit preparation did not confirm in time'));
+}
+
 async function doMakeDeposit() {
   const btn = document.querySelector('#depositModal .btn-gold');
   if (!btn || btn.disabled) return;
@@ -3433,7 +3478,9 @@ async function doMakeDeposit() {
       const s = sec % 60;
       document.getElementById('cdTimer').textContent = `${m}:${s.toString().padStart(2, '0')}`;
     }, 1000);
-    const res = await rpc('make_term_deposit', { amount, tier, ring_size: 11, idempotency_key: idemKey });
+    const res = await pbcExactDeposit(amount, tier, idemKey, (t) => {
+      try { cdLog(t, 'info'); const cs = document.getElementById('cdStep'); if (cs) cs.textContent = t; } catch(_) {}
+    });
     clearInterval(_sweepTimerInterval); _sweepTimerInterval = null;
     stopLogTail();
     cdLog('✓ Deposit TX: ' + shortTx(res.tx_hash), 'ok');
@@ -3461,7 +3508,7 @@ async function doMakeDeposit() {
       closeDepositModal();
       try {
         await consolidateAndExecute(`deposit of ${fmt(amount)} PBC (tier ${tier})`, amount, async () => {
-          const res = await rpc('make_term_deposit', { amount, tier, ring_size: 11, idempotency_key: idemKey });
+          const res = await pbcExactDeposit(amount, tier, idemKey, (t) => { try { cdLog(t, 'info'); } catch(_) {} });
           cdLog('\u2713 Deposit TX: ' + shortTx(res.tx_hash), 'ok');
           toast('Deposit created! TX: ' + shortTx(res.tx_hash), 'ok');
           updateMempoolBadge();
@@ -5910,7 +5957,7 @@ async function poolAriaToggle(on) {
 }
 
 async function poolAriaFetch(reason) {
-  if (!_poolAria.enabled || !poolAriaSupported()) return;
+  if (!_poolAria.enabled || !poolAriaSupported()) { poolAriaRender(); return; }
   const now = Date.now();
   if (_poolAria.loading) return;
   if (reason === 'balance' && now - _poolAria.lastFetch < 120000) return;  // debounce 2 min

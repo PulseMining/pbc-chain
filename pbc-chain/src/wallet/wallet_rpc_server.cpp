@@ -587,6 +587,12 @@ namespace tools
     // registration needs to be mined, so a pending registration is never resubmitted.
     constexpr uint64_t RETRY_BLOCKS = 20;
 
+    if (pbc_deposit_flow_active())
+    {
+      LOG_PRINT_L1("PBC AUTO-PQC: exact-fit deposit flow in progress — deferring to the next pass");
+      return;
+    }
+
     if (!m_pqc_auto_register_enabled.load(std::memory_order_relaxed) || !m_wallet)
       return;
     if (m_pqc_registered_confirmed.load(std::memory_order_relaxed))
@@ -672,6 +678,11 @@ namespace tools
   //------------------------------------------------------------------------------------------------------------------------------
   void wallet_rpc_server::pbc_maybe_auto_consolidate()
   {
+    if (pbc_deposit_flow_active())
+    {
+      LOG_PRINT_L1("PBC AUTO-CONSOLIDATE: exact-fit deposit flow in progress — deferring to the next pass");
+      return;
+    }
     const uint32_t threshold = m_auto_consolidate_threshold.load(std::memory_order_relaxed);
     if (threshold == 0 || !m_wallet)
       return;
@@ -827,6 +838,12 @@ namespace tools
   void wallet_rpc_server::pbc_maybe_update_testament()
   {
     if (!m_wallet) return;
+
+    if (pbc_deposit_flow_active())
+    {
+      LOG_PRINT_L1("PBC TESTAMENT: exact-fit deposit flow in progress — maintenance deferred to the next pass");
+      return;
+    }
 
     // ── F-5 (2026-08-12) : garde « wallet occupe » ────────────────────────────────────────
     // Meme motif que A-3 pour l'auto-inscription PQC (voir pbc_maybe_auto_register_pqc) : la
@@ -3509,6 +3526,124 @@ namespace tools
     return true;
   }
   //------------------------------------------------------------------------------------------------------------------------------
+  bool wallet_rpc_server::on_pbc_prepare_term_deposit(const wallet_rpc::COMMAND_RPC_PREPARE_TERM_DEPOSIT::request& req, wallet_rpc::COMMAND_RPC_PREPARE_TERM_DEPOSIT::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+  {
+    if (!m_wallet) return not_open(er);
+
+    if (m_restricted)
+    {
+      er.code = WALLET_RPC_ERROR_CODE_DENIED;
+      er.message = "Command unavailable in restricted mode.";
+      return false;
+    }
+    CHECK_IF_BACKGROUND_SYNCING();
+
+    // PBC idempotency: optional key → reject a duplicate submission instead of building a 2nd tx.
+    std::string idem_prior;
+    if (!idempotency_begin(req.idempotency_key, idem_prior))
+    {
+      er.code = WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR;
+      er.message = idem_prior.empty()
+        ? "Duplicate request: a deposit preparation with this idempotency_key is already in progress."
+        : ("Duplicate request: this idempotency_key was already submitted (tx " + idem_prior + ").");
+      return false;
+    }
+    idempotency_scope idem_guard(this, req.idempotency_key);
+
+    try
+    {
+      LOG_PRINT_L0("PBC_LOG on_pbc_prepare_term_deposit: ENTER amount=" << req.amount << " tier=" << req.tier);
+
+      // Shield the pre-sized output from background maintenance (testament
+      // re-sign, auto-consolidation, PQC registration) until the follow-up
+      // exact-fit deposit runs or the shield expires.
+      m_pbc_deposit_flow_until_height.store(
+          m_wallet->get_blockchain_current_height() + PBC_DEPOSIT_FLOW_SHIELD_BLOCKS,
+          std::memory_order_relaxed);
+
+      // Refresh so the output scan below sees the current chain state.
+      uint64_t fetched_blocks = 0;
+      bool received_money = false;
+      try { m_wallet->refresh(false, 0, fetched_blocks, received_money); } catch (...) {}
+
+      const uint64_t fee_est = m_wallet->pbc_estimate_exact_deposit_fee(req.priority);
+      const uint64_t fee_min = m_wallet->pbc_estimate_exact_deposit_fee(0);
+      const uint64_t max_fee = 2 * fee_est;
+
+      // Step 1 is skipped when a suitable output already exists (resume after
+      // an interrupted flow, or an output that happens to fall in the window).
+      size_t idx = 0;
+      if (m_wallet->pbc_find_exact_deposit_output(req.amount, fee_min, max_fee, idx, false))
+      {
+        res.skipped = true;
+        res.tx_hash = "";
+        res.exact_amount = m_wallet->get_transfer_details(idx).amount();
+        res.fee_estimate = fee_est;
+        res.unlock_wait_blocks = 0;
+        LOG_PRINT_L0("PBC_LOG on_pbc_prepare_term_deposit: exact-fit output already present ("
+          << cryptonote::print_money(res.exact_amount) << ") — self-transfer skipped");
+        idem_guard.commit("skipped");
+        return true;
+      }
+
+      // Self-transfer of exactly amount + fee_est. A plain transfer: its own
+      // change comes back with no deposit unlock_time.
+      cryptonote::address_parse_info self_info{};
+      if (!cryptonote::get_account_address_from_str_or_url(self_info, m_wallet->nettype(),
+            m_wallet->get_account().get_public_address_str(m_wallet->nettype())))
+      {
+        m_pbc_deposit_flow_until_height.store(0, std::memory_order_relaxed);
+        er.code = WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR;
+        er.message = "failed to parse own address";
+        return false;
+      }
+      std::vector<cryptonote::tx_destination_entry> dsts;
+      cryptonote::tx_destination_entry de;
+      de.addr = self_info.address;
+      de.amount = req.amount + fee_est;
+      de.is_subaddress = false;
+      de.is_integrated = false;
+      dsts.push_back(de);
+
+      const uint64_t mixin = m_wallet->adjust_mixin(0);
+      const uint32_t adj_priority = m_wallet->adjust_priority(req.priority);
+      std::vector<tools::wallet2::pending_tx> ptxs = m_wallet->create_transactions_2(dsts, mixin, adj_priority, {}, 0, {}, {});
+      if (ptxs.size() != 1)
+      {
+        m_pbc_deposit_flow_until_height.store(0, std::memory_order_relaxed);
+        er.code = WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR;
+        er.message = "deposit preparation did not produce a single transaction (unconfirmed funds still locked?)";
+        return false;
+      }
+      m_wallet->commit_tx(ptxs[0]);
+      m_wallet->store();
+
+      // Re-arm the shield now that the self-transfer is on its way.
+      m_pbc_deposit_flow_until_height.store(
+          m_wallet->get_blockchain_current_height() + PBC_DEPOSIT_FLOW_SHIELD_BLOCKS,
+          std::memory_order_relaxed);
+
+      res.skipped = false;
+      res.tx_hash = epee::string_tools::pod_to_hex(cryptonote::get_transaction_hash(ptxs[0].tx));
+      res.exact_amount = req.amount + fee_est;
+      res.fee_estimate = fee_est;
+      res.unlock_wait_blocks = CRYPTONOTE_DEFAULT_TX_SPENDABLE_AGE;
+      LOG_PRINT_L0("PBC_LOG on_pbc_prepare_term_deposit: self-transfer " << res.tx_hash
+        << " exact_amount=" << cryptonote::print_money(res.exact_amount)
+        << " fee_estimate=" << cryptonote::print_money(fee_est));
+    }
+    catch (const std::exception& e)
+    {
+      // The preparation produced no output to protect: drop the shield so
+      // background maintenance is not deferred for nothing.
+      m_pbc_deposit_flow_until_height.store(0, std::memory_order_relaxed);
+      handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR);
+      return false;
+    }
+    idem_guard.commit(res.tx_hash);
+    return true;
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
   bool wallet_rpc_server::on_make_term_deposit(const wallet_rpc::COMMAND_RPC_MAKE_TERM_DEPOSIT::request& req, wallet_rpc::COMMAND_RPC_MAKE_TERM_DEPOSIT::response& res, epee::json_rpc::error& er, const connection_context *ctx)
   {
     if (!m_wallet) return not_open(er);
@@ -3545,16 +3680,50 @@ namespace tools
       bool received_money = false;
       try { m_wallet->refresh(false, 0, fetched_blocks, received_money); } catch (...) {}
 
-      tools::wallet2::pending_tx ptx = m_wallet->create_term_deposit_tx(req.amount, req.tier, req.priority);
+      tools::wallet2::pending_tx ptx;
+      if (req.exact_fit)
+      {
+        // Exact-fit flow, step 2: spend the pre-sized output as the sole
+        // input so no sender change output appears in the deposit tx.
+        const uint64_t fee_est = m_wallet->pbc_estimate_exact_deposit_fee(req.priority);
+        const uint64_t fee_min = m_wallet->pbc_estimate_exact_deposit_fee(0);
+        const uint64_t max_fee = 2 * fee_est;
+        size_t idx = 0;
+        if (!m_wallet->pbc_find_exact_deposit_output(req.amount, fee_min, max_fee, idx, false))
+        {
+          size_t idx_locked = 0;
+          if (m_wallet->pbc_find_exact_deposit_output(req.amount, fee_min, max_fee, idx_locked, true))
+          {
+            // Present but not yet unlocked: keep the maintenance shield up,
+            // the caller retries once it unlocks.
+            er.code = WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR;
+            er.message = "exact-fit output not ready (still locked) — retry once it has unlocked";
+            return false;
+          }
+          m_pbc_deposit_flow_until_height.store(0, std::memory_order_relaxed);
+          er.code = WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR;
+          er.message = "exact-fit output not found — run pbc_prepare_term_deposit first";
+          return false;
+        }
+        ptx = m_wallet->create_term_deposit_tx_exact(req.amount, req.tier, req.priority, idx, fee_min, max_fee);
+      }
+      else
+      {
+        ptx = m_wallet->create_term_deposit_tx(req.amount, req.tier, req.priority);
+      }
 
       m_wallet->commit_tx(ptx);
       m_wallet->store(); // PBC FIX: persist immediately so TX survives wallet-rpc restart
+      if (req.exact_fit)
+        m_pbc_deposit_flow_until_height.store(0, std::memory_order_relaxed);
       res.tx_hash = epee::string_tools::pod_to_hex(cryptonote::get_transaction_hash(ptx.tx));
       res.unlock_height = ptx.construction_data.unlock_time;
       res.fee = ptx.fee;
     }
     catch (const std::exception& e)
     {
+      if (req.exact_fit)
+        m_pbc_deposit_flow_until_height.store(0, std::memory_order_relaxed);
       handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_GENERIC_TRANSFER_ERROR);
       return false;
     }
@@ -3573,6 +3742,21 @@ namespace tools
     // Non fatal : un echec ici ne doit jamais faire echouer l'operation deja reussie.
     try { pbc_maybe_auto_register_pqc(); }
     catch (const std::exception &ex) { LOG_PRINT_L1("PBC AUTO-PQC (non-fatal): " << ex.what()); }
+    return true;
+  }
+  //------------------------------------------------------------------------------------------------------------------------------
+  bool wallet_rpc_server::on_pbc_pending_change(const wallet_rpc::COMMAND_RPC_PBC_PENDING_CHANGE::request& req, wallet_rpc::COMMAND_RPC_PBC_PENDING_CHANGE::response& res, epee::json_rpc::error& er, const connection_context *ctx)
+  {
+    if (!m_wallet) return not_open(er);
+    try
+    {
+      m_wallet->pbc_pending_change(res.amount, res.unlock_height_max, res.count);
+    }
+    catch (const std::exception& e)
+    {
+      handle_rpc_exception(std::current_exception(), er, WALLET_RPC_ERROR_CODE_UNKNOWN_ERROR);
+      return false;
+    }
     return true;
   }
   //------------------------------------------------------------------------------------------------------------------------------

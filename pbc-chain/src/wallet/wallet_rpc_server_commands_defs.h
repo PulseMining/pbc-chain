@@ -2860,7 +2860,11 @@ namespace wallet_rpc
     typedef epee::misc_utils::struct_init<response_t> response;
   };
 
-  struct COMMAND_RPC_MAKE_TERM_DEPOSIT
+  // PBC exact-fit deposit flow, step 1: create (unless one already exists) a
+  // wallet output sized at amount + the deposit transaction's fee, so the
+  // follow-up deposit (make_term_deposit with exact_fit) can spend it as its
+  // sole input without producing a sender change output.
+  struct COMMAND_RPC_PREPARE_TERM_DEPOSIT
   {
     struct request_t
     {
@@ -2880,6 +2884,45 @@ namespace wallet_rpc
 
     struct response_t
     {
+      bool        skipped;            // true: a suitable output already exists, no transfer was made
+      std::string tx_hash;            // empty when skipped
+      uint64_t    exact_amount;       // amount of the exact-fit output (amount + fee estimate)
+      uint64_t    fee_estimate;       // fee estimate used for the sizing
+      uint64_t    unlock_wait_blocks; // confirmations to wait before step 2 (0 when skipped)
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(skipped)
+        KV_SERIALIZE(tx_hash)
+        KV_SERIALIZE(exact_amount)
+        KV_SERIALIZE(fee_estimate)
+        KV_SERIALIZE(unlock_wait_blocks)
+      END_KV_SERIALIZE_MAP()
+    };
+    typedef epee::misc_utils::struct_init<response_t> response;
+  };
+
+  struct COMMAND_RPC_MAKE_TERM_DEPOSIT
+  {
+    struct request_t
+    {
+      uint64_t amount;
+      uint8_t  tier;
+      uint32_t priority;
+      bool     exact_fit;
+      std::string idempotency_key;
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(amount)
+        KV_SERIALIZE(tier)
+        KV_SERIALIZE_OPT(priority, (uint32_t)0)
+        KV_SERIALIZE_OPT(exact_fit, false)
+        KV_SERIALIZE_OPT(idempotency_key, std::string())
+      END_KV_SERIALIZE_MAP()
+    };
+    typedef epee::misc_utils::struct_init<request_t> request;
+
+    struct response_t
+    {
       std::string tx_hash;
       uint64_t    unlock_height;
       uint64_t    fee;
@@ -2888,6 +2931,33 @@ namespace wallet_rpc
         KV_SERIALIZE(tx_hash)
         KV_SERIALIZE(unlock_height)
         KV_SERIALIZE(fee)
+      END_KV_SERIALIZE_MAP()
+    };
+    typedef epee::misc_utils::struct_init<response_t> response;
+  };
+
+  // PBC: change outputs of the wallet's own term deposit transactions still
+  // locked by the deposits' unlock_time ("pending change"). Coinbase vesting
+  // is never included (coinbase transactions carry no TERM_DEPOSIT tag).
+  struct COMMAND_RPC_PBC_PENDING_CHANGE
+  {
+    struct request_t
+    {
+      BEGIN_KV_SERIALIZE_MAP()
+      END_KV_SERIALIZE_MAP()
+    };
+    typedef epee::misc_utils::struct_init<request_t> request;
+
+    struct response_t
+    {
+      uint64_t amount;            // atomic units still locked as deposit change
+      uint64_t unlock_height_max; // farthest unlock height among those outputs (0 when none)
+      uint64_t count;             // number of locked change outputs
+
+      BEGIN_KV_SERIALIZE_MAP()
+        KV_SERIALIZE(amount)
+        KV_SERIALIZE(unlock_height_max)
+        KV_SERIALIZE(count)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<response_t> response;

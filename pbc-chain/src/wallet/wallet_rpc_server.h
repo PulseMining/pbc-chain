@@ -182,11 +182,13 @@ namespace tools
         MAP_JON_RPC_WE("get_default_fee_priority", on_get_default_fee_priority, wallet_rpc::COMMAND_RPC_GET_DEFAULT_FEE_PRIORITY)
         MAP_JON_RPC_WE("get_version",        on_get_version,        wallet_rpc::COMMAND_RPC_GET_VERSION)
         MAP_JON_RPC_WE("setup_background_sync", on_setup_background_sync, wallet_rpc::COMMAND_RPC_SETUP_BACKGROUND_SYNC)
+        MAP_JON_RPC_WE("pbc_prepare_term_deposit", on_pbc_prepare_term_deposit, wallet_rpc::COMMAND_RPC_PREPARE_TERM_DEPOSIT)
         MAP_JON_RPC_WE("start_background_sync", on_start_background_sync, wallet_rpc::COMMAND_RPC_START_BACKGROUND_SYNC)
         MAP_JON_RPC_WE("stop_background_sync", on_stop_background_sync, wallet_rpc::COMMAND_RPC_STOP_BACKGROUND_SYNC)
         MAP_JON_RPC_WE("pbc_pqc_register",   on_pbc_pqc_register,   wallet_rpc::COMMAND_RPC_PBC_PQC_REGISTER)
         MAP_JON_RPC_WE("pbc_get_pqc_address", on_pbc_get_pqc_address, wallet_rpc::COMMAND_RPC_PBC_GET_PQC_ADDRESS)
         MAP_JON_RPC_WE("make_term_deposit",  on_make_term_deposit,  wallet_rpc::COMMAND_RPC_MAKE_TERM_DEPOSIT)
+        MAP_JON_RPC_WE("pbc_pending_change", on_pbc_pending_change, wallet_rpc::COMMAND_RPC_PBC_PENDING_CHANGE)
         MAP_JON_RPC_WE("claim_deposit",      on_claim_deposit,      wallet_rpc::COMMAND_RPC_CLAIM_DEPOSIT)
         MAP_JON_RPC_WE("term_withdraw_deposit", on_term_withdraw_deposit, wallet_rpc::COMMAND_RPC_TERM_WITHDRAW_DEPOSIT)
         MAP_JON_RPC_WE("get_deposits",       on_get_deposits,       wallet_rpc::COMMAND_RPC_GET_DEPOSITS)
@@ -302,10 +304,12 @@ namespace tools
       bool on_estimate_tx_size_and_weight(const wallet_rpc::COMMAND_RPC_ESTIMATE_TX_SIZE_AND_WEIGHT::request& req, wallet_rpc::COMMAND_RPC_ESTIMATE_TX_SIZE_AND_WEIGHT::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_get_default_fee_priority(const wallet_rpc::COMMAND_RPC_GET_DEFAULT_FEE_PRIORITY::request& req, wallet_rpc::COMMAND_RPC_GET_DEFAULT_FEE_PRIORITY::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_get_version(const wallet_rpc::COMMAND_RPC_GET_VERSION::request& req, wallet_rpc::COMMAND_RPC_GET_VERSION::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_pbc_prepare_term_deposit(const wallet_rpc::COMMAND_RPC_PREPARE_TERM_DEPOSIT::request& req, wallet_rpc::COMMAND_RPC_PREPARE_TERM_DEPOSIT::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_setup_background_sync(const wallet_rpc::COMMAND_RPC_SETUP_BACKGROUND_SYNC::request& req, wallet_rpc::COMMAND_RPC_SETUP_BACKGROUND_SYNC::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_start_background_sync(const wallet_rpc::COMMAND_RPC_START_BACKGROUND_SYNC::request& req, wallet_rpc::COMMAND_RPC_START_BACKGROUND_SYNC::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_stop_background_sync(const wallet_rpc::COMMAND_RPC_STOP_BACKGROUND_SYNC::request& req, wallet_rpc::COMMAND_RPC_STOP_BACKGROUND_SYNC::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_make_term_deposit(const wallet_rpc::COMMAND_RPC_MAKE_TERM_DEPOSIT::request& req, wallet_rpc::COMMAND_RPC_MAKE_TERM_DEPOSIT::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
+      bool on_pbc_pending_change(const wallet_rpc::COMMAND_RPC_PBC_PENDING_CHANGE::request& req, wallet_rpc::COMMAND_RPC_PBC_PENDING_CHANGE::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_pbc_pqc_register(const wallet_rpc::COMMAND_RPC_PBC_PQC_REGISTER::request& req, wallet_rpc::COMMAND_RPC_PBC_PQC_REGISTER::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_pbc_get_pqc_address(const wallet_rpc::COMMAND_RPC_PBC_GET_PQC_ADDRESS::request& req, wallet_rpc::COMMAND_RPC_PBC_GET_PQC_ADDRESS::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
       bool on_claim_deposit(const wallet_rpc::COMMAND_RPC_CLAIM_DEPOSIT::request& req, wallet_rpc::COMMAND_RPC_CLAIM_DEPOSIT::response& res, epee::json_rpc::error& er, const connection_context *ctx = NULL);
@@ -384,6 +388,20 @@ namespace tools
       // boucle infinie qui brulait des frais et invalidait le testament stocke (double-spend
       // constate en campagne le 2026-08-10). 0 = aucun recul en cours.
       std::atomic<uint64_t> m_testament_retry_after_height{0};
+
+      // PBC exact-fit deposit flow: while a two-step deposit is in flight (between
+      // pbc_prepare_term_deposit and the exact-fit make_term_deposit), background
+      // maintenance (testament re-sign, auto-consolidation, PQC registration) defers
+      // so the pre-sized output stays untouched. Height-based deadline, in-memory
+      // only: an expired or lost shield never locks funds — the output stays a
+      // normal spendable output and step 2 simply reports it missing.
+      std::atomic<uint64_t> m_pbc_deposit_flow_until_height{0};
+      static constexpr uint64_t PBC_DEPOSIT_FLOW_SHIELD_BLOCKS = 60;
+      bool pbc_deposit_flow_active() const
+      {
+        const uint64_t until = m_pbc_deposit_flow_until_height.load(std::memory_order_relaxed);
+        return until != 0 && m_wallet && m_wallet->get_blockchain_current_height() < until;
+      }
       uint32_t m_auto_consolidate_priority = 1;              // tx priority for consolidation sweeps
       std::chrono::time_point<std::chrono::steady_clock> m_last_auto_consolidate_time{};
 

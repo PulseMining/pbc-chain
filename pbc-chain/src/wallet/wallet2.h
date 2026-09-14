@@ -1180,6 +1180,11 @@ private:
     // locked & unlocked balance per subaddress of given or current subaddress account
     std::map<uint32_t, uint64_t> balance_per_subaddress(uint32_t subaddr_index_major, bool strict) const;
     std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> unlocked_balance_per_subaddress(uint32_t subaddr_index_major, bool strict);
+    // PBC: change outputs of this wallet's own term deposit transactions that
+    // are still locked by the deposit's unlock_time. Only outputs of
+    // transactions tagged TERM_DEPOSIT in tx_extra are counted — coinbase
+    // vesting outputs never carry that tag and are therefore never included.
+    void pbc_pending_change(uint64_t& amount, uint64_t& unlock_height_max, uint64_t& count);
     // all locked & unlocked balances of all subaddress accounts
     uint64_t balance_all(bool strict) const;
     uint64_t unlocked_balance_all(bool strict, uint64_t *blocks_to_unlock = NULL, uint64_t *time_to_unlock = NULL);
@@ -1216,6 +1221,13 @@ private:
     std::vector<wallet2::pending_tx> create_transactions_single(const crypto::key_image &ki, const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, const size_t fake_outs_count, uint32_t priority, const std::vector<uint8_t>& extra);
     std::vector<wallet2::pending_tx> create_transactions_from(const cryptonote::account_public_address &address, bool is_subaddress, const size_t outputs, std::vector<size_t> unused_transfers_indices, std::vector<size_t> unused_dust_indices, const size_t fake_outs_count, uint32_t priority, const std::vector<uint8_t>& extra);
     pending_tx create_term_deposit_tx(uint64_t amount, uint8_t tier, uint32_t priority);
+    // PBC: exact-fit deposit flow — the deposit transaction spends a single
+    // pre-sized output (amount + its own fee), so no sender change output
+    // appears in it and only the deposit itself carries the deposit
+    // unlock_time.
+    uint64_t pbc_estimate_exact_deposit_fee(uint32_t priority);
+    bool pbc_find_exact_deposit_output(uint64_t amount, uint64_t min_fee, uint64_t max_fee, size_t& idx, bool include_locked);
+    pending_tx create_term_deposit_tx_exact(uint64_t amount, uint8_t tier, uint32_t priority, size_t exact_transfer_idx, uint64_t min_fee, uint64_t max_fee);
 
     // TD-5: Create a TX_CLAIM transaction to claim rewards for a deposit
     pending_tx create_claim_tx(const crypto::hash& deposit_id, uint32_t priority);
