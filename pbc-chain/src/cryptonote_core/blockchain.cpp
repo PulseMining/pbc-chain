@@ -8813,10 +8813,26 @@ leave:
         {
           uint64_t min_lock_amount = dep_rec.amount; // default: full principal
           uint64_t active_ask_price = 0;
-          if (m_db->get_property_uint64(pbc_ask_dep_key(lock_field.deposit_id, "_price"), active_ask_price)
-              && active_ask_price > 0)
+          const bool ask_active = m_db->get_property_uint64(pbc_ask_dep_key(lock_field.deposit_id, "_price"), active_ask_price)
+              && active_ask_price > 0;
+          if (ask_active)
           {
             min_lock_amount = active_ask_price; // ask is active: buyer pays ask_price
+          }
+          // v8.3.2 soft fork: from PBC_MARKET_CONSENSUS_HEIGHT (height of the block
+          // being validated) a collateral lock is only valid while an active ask
+          // exists on the deposit. Below the gate: legacy rule, unchanged.
+          if (block_height >= PBC_MARKET_CONSENSUS_HEIGHT && !ask_active)
+          {
+            MERROR("PBC market: lock rejected by consensus rule (h=" << block_height << " >= activation " << PBC_MARKET_CONSENSUS_HEIGHT << ") tx=" << lock_tx_id << " reason=no active ask on deposit " << lock_field.deposit_id);
+            if (pbc_started_batch) m_db->batch_abort();
+            m_batch_success = false;
+            // PBC: return taken txs to the pool on block failure (was leaking
+            // them out of every mempool on each rejected block — 04/09 incident)
+            pbc_poison_txid = lock_tx_id;  // v8.2.19 FIX-C: this tx failed block validation — do not return it to the pool
+            return_txs_to_pool();
+            bvc.m_verifivation_failed = true;
+            return false;
           }
           if (lock_field.amount < min_lock_amount)
           {
