@@ -19,7 +19,7 @@ This repository hosts the **source code only** (no binaries):
 
 The miner source is distributed separately and is not part of this repository.
 
-📦 **Pre-compiled binaries** (node packages for Zen1/Zen3/Zen5 CPUs, GUI wallets for Windows & Linux, static builds) and **step-by-step quick-start guides** are available on the project website: **[privbank.finance](https://privbank.finance)** — the same source code is also downloadable there as a versioned, md5-verified archive.
+📦 **Pre-compiled binaries** (a single generic node package that works on any x86-64 CPU, GUI wallets for Windows & Linux) and **step-by-step quick-start guides** are available on the project website: **[privbank.finance](https://privbank.finance)** — the same source code is also downloadable there as a versioned, md5-verified archive.
 
 ## Partnership with PulseMining
 
