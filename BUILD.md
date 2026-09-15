@@ -68,7 +68,7 @@ Binaries land in `build/release/bin/`:
 **The node:**
 
 ```bash
-screen -dmS node ./build/release/bin/pbcd --log-file $PWD/pbcd.log
+screen -dmS node ./build/release/bin/pbcd --non-interactive --log-file $PWD/pbcd.log
 ```
 
 (Several machines on the same LAN? Only ONE runs the node, with `--rpc-bind-ip 0.0.0.0 --confirm-external-bind` — the others point to it.)

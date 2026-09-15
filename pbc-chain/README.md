@@ -65,10 +65,12 @@ source root).
 ### 1. Start the node
 
 ```bash
-screen -dmS node ./build/release/bin/pbcd --log-file $PWD/pbcd.log
+screen -dmS node ./build/release/bin/pbcd --non-interactive --log-file $PWD/pbcd.log
 # LAN node (accepts miners from other machines):
-# screen -dmS node ./build/release/bin/pbcd --rpc-bind-ip 0.0.0.0 --confirm-external-bind --log-file $PWD/pbcd.log
+# screen -dmS node ./build/release/bin/pbcd --non-interactive --rpc-bind-ip 0.0.0.0 --confirm-external-bind --log-file $PWD/pbcd.log
 ```
+
+`--non-interactive`: runs the node in non-interactive mode (recommended for a node running in the background).
 
 The node connects to the network seeds automatically. Check it is syncing:
 
