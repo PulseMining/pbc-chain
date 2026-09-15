@@ -70,6 +70,8 @@ A **Locked Supply Multiplier** dampens reward inflows when more than 60% of circ
 2. **Build from source:** see **[BUILD.md](BUILD.md)** (Ubuntu 24 / Debian 12) — **liboqs MUST be built first**, then the node, CLI wallet, wallet-RPC and web UI.
 3. The full source code is also published as a versioned, md5-verified archive on [privbank.finance](https://privbank.finance), alongside the compiled binaries.
 
+**Running a node in the background:** start `pbcd` with `--non-interactive` (recommended for a node running in the background, e.g. under `screen` or `systemd`).
+
 ## License
 
 Privacy Bank Chain is open source. See the `LICENSE` file in `pbc-chain/` for details.
