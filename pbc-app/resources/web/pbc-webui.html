@@ -3363,10 +3363,17 @@ function closeDepositModal() {
 // wallet_rpc_server.cpp (on_make_term_deposit, exact_fit branch).
 async function pbcExactDeposit(amount, tier, idemKey, phaseCb) {
   const say = (t) => { if (phaseCb) phaseCb(t); };
+  // The wait below is measured in BLOCKS, never in seconds: the nominal 60 s
+  // block time can drift widely, so only a height advance proves the chain
+  // moved (and that the preparation had time to be seen and to unlock).
+  const GRACE_BLOCKS = 6; // spendable age (4 blocks) + margin
+  const getH = async () => { try { const r = await rpc('get_height'); return r.height || 0; } catch (_) { return 0; } };
   say('Preparing…');
   await rpc('pbc_prepare_term_deposit', { amount, tier, idempotency_key: idemKey ? idemKey + '-prep' : '' });
+  let prepHeight = await getH();
   const attempt = () => rpc('make_term_deposit', { amount, tier, exact_fit: true, idempotency_key: idemKey });
   let lastErr = null;
+  let reprepared = false;
   for (let i = 0; i < 90; i++) {
     say(i === 0 ? 'Depositing…' : 'Confirming preparation… (' + i + ')');
     try {
@@ -3375,10 +3382,30 @@ async function pbcExactDeposit(amount, tier, idemKey, phaseCb) {
       const m = (e.message || '').toLowerCase();
       if (m.includes('exact-fit output not ready')) { lastErr = e; await sleep(5000); continue; }
       if (m.includes('exact-fit output not found')) {
-        // The prepared output is gone (wallet restarted, or background
-        // maintenance absorbed it after the shield expired): re-run step 1,
-        // then keep waiting. No funds are ever locked by this flow.
-        await rpc('pbc_prepare_term_deposit', { amount, tier, idempotency_key: idemKey ? idemKey + '-prep2' : '' });
+        // Right after step 1 the wallet has not yet ingested its own
+        // unconfirmed self-transfer, and the output then needs its spendable
+        // age: "not found" is expected during that window and the funds are
+        // merely tied up in the pending preparation. Re-run step 1 ONLY after
+        // GRACE_BLOCKS new blocks with the output still missing (wallet
+        // restarted, or background maintenance absorbed it after the shield
+        // expired), at most once, then keep waiting.
+        if (!reprepared) {
+          const h = await getH();
+          if (h === 0) { lastErr = e; await sleep(5000); continue; }
+          if (prepHeight === 0) { prepHeight = h; lastErr = e; await sleep(5000); continue; }
+          if (h < prepHeight + GRACE_BLOCKS) { lastErr = e; await sleep(5000); continue; }
+          try {
+            await rpc('pbc_prepare_term_deposit', { amount, tier, idempotency_key: idemKey ? idemKey + '-prep2' : '' });
+            reprepared = true;
+            const h2 = await getH(); if (h2 > 0) prepHeight = h2;
+          } catch (pe) {
+            const pm = (pe.message || '').toLowerCase();
+            // A preparation is still in flight and its funds are still tied
+            // up: keep waiting — this is never fatal for this flow.
+            if (pm.includes('not enough') || pm.includes('duplicate') || pm.includes('already')) { lastErr = e; await sleep(5000); continue; }
+            throw pe;
+          }
+        }
         lastErr = e; await sleep(5000); continue;
       }
       throw e;
