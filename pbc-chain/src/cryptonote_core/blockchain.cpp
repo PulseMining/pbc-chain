@@ -2635,7 +2635,11 @@ size_t Blockchain::recalculate_difficulties(boost::optional<uint64_t> start_heig
   LOG_PRINT_L3("Blockchain::" << __func__);
   CRITICAL_REGION_LOCAL(m_blockchain_lock);
 
-  const uint64_t start_height = start_height_opt ? *start_height_opt : check_difficulty_checkpoints().second;
+  // The recalculation starts at the same minimum depth used by the
+  // alternative-chain guard; earlier blocks belong to the warmup phase,
+  // whose difficulty is a fixed constant.
+  const uint64_t start_height = std::max(start_height_opt ? *start_height_opt : check_difficulty_checkpoints().second,
+                                         (uint64_t)(DIFFICULTY_BLOCKS_COUNT_V4 + 2));
   const uint64_t top_height = m_db->height() - 1;
   MGINFO("Recalculating difficulties from height " << start_height << " to height " << top_height);
 
