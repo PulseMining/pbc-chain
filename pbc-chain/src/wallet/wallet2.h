@@ -1314,6 +1314,10 @@ private:
 
       // ── Economic ──
       uint64_t       fee_paid;
+
+      // ── v8.4.0: principal return state ──
+      bool           principal_paid;         // true once the kind-1 payout for this deposit is applied
+      uint64_t       principal_paid_height;  // block height of the principal payout (0 if not paid)
     };
     std::vector<term_deposit_record> get_term_deposits() const;
     bool get_term_deposit_by_txid(const crypto::hash &txid, term_deposit_record &rec) const;

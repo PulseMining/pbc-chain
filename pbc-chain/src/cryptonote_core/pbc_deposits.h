@@ -276,11 +276,18 @@ pbc_withdraw_result pbc_validate_withdraw_tx(
 // Used by wallet (sign) and consensus (verify).
 crypto::hash pbc_build_withdraw_msg_hash(const crypto::hash& deposit_id, uint64_t payout_amount);
 
+// v8.4.0: V2 message for payout_kind = 1 (principal return). Commits to payout_kind.
+// msg = PBC_WITHDRAW_OWNER_MSG_PREFIX_V2 || deposit_id (32) || payout_amount (8 LE) || payout_kind (1)
+crypto::hash pbc_build_withdraw_msg_hash_v2(const crypto::hash& deposit_id, uint64_t payout_amount, uint8_t payout_kind);
+
 // Problem 2 — message hashed by the MANDATORY-after-HF Dilithium co-signature on TERM_WITHDRAW /
 // MARKET_PAYOUT_CLAIM TXs. Domain-separated from the Ed25519 owner_sig message (different prefix)
 // so the two signatures are never interchangeable. Byte-identical on wallet (signer) and consensus
 // (verifier): H(PBC_PQC_WITHDRAW_MSG_PREFIX || deposit_id(32) || payout_amount(8, little-endian)).
 crypto::hash pbc_build_pqc_withdraw_msg_hash(const crypto::hash& deposit_id, uint64_t payout_amount);
+
+// v8.4.0: PQC V2 message for payout_kind = 1 (current PQC prefix + "_V2").
+crypto::hash pbc_build_pqc_withdraw_msg_hash_v2(const crypto::hash& deposit_id, uint64_t payout_amount, uint8_t payout_kind);
 
 // PF: Withdraw delta record — stored per-withdraw for reorg reversal
 struct pbc_withdraw_delta

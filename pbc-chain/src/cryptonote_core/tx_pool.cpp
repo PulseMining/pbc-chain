@@ -397,6 +397,50 @@ namespace cryptonote
       // PBC_CLAIM_NOT_APPLICABLE: not a claim TX, continue normally
     }
 
+    // ── v8.4.0: admission ring freeze — reject early (no_drop_offense) any tx whose ring
+    // references a term-deposit principal output. Consensus enforcement is in
+    // scan_outputkeys_for_indexes from H_ACT on; this mempool rule (same margin as the
+    // get_outs decoy policy) stops such txs from entering/relaying PBC_PRINCIPAL_DECOY_MARGIN
+    // blocks earlier, so wallets get a clean rejection instead of an unmineable tx.
+    if (!kept_by_block
+        && m_blockchain.get_current_blockchain_height() + PBC_PRINCIPAL_DECOY_MARGIN >= PBC_PRINCIPAL_RETURN_HEIGHT)
+    {
+      bool pbc_ring_has_deposit = false;
+      for (const auto& vin : tx.vin)
+      {
+        if (vin.type() != typeid(txin_to_key))
+          continue;
+        const auto& in = boost::get<txin_to_key>(vin);
+        if (in.amount != 0)
+          continue;  // deposit principal outputs live in the RCT (amount 0) bucket
+        uint64_t abs_offset = 0;
+        for (const uint64_t rel : in.key_offsets)
+        {
+          abs_offset += rel;
+          const tx_out_index toi = m_blockchain.get_db().get_output_tx_and_index(in.amount, abs_offset);
+          if (toi.second != PBC_DEPOSIT_VOUT_INDEX)
+            continue;
+          uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+          size_t dep_buf_size = PBC_DEPOSIT_RECORD_PACKED_SIZE;
+          if (m_blockchain.get_db().get_pbc_deposit(toi.first, dep_buf, dep_buf_size))
+          {
+            pbc_ring_has_deposit = true;
+            break;
+          }
+        }
+        if (pbc_ring_has_deposit)
+          break;
+      }
+      if (pbc_ring_has_deposit)
+      {
+        LOG_PRINT_L1("PBC mempool precheck: rejected tx=" << id
+          << " reason=deposit_output_in_ring");
+        tvc.m_verifivation_failed = true;
+        tvc.m_no_drop_offense = true;
+        return false;
+      }
+    }
+
     // ── PF mempool precheck: reject invalid TERM_WITHDRAW payout TXs early (non-consensus) ──
     // Strict checks for the new virtual-input format.
     // Soft-reject: m_no_drop_offense = true → don't penalize peer.
@@ -513,33 +557,93 @@ namespace cryptonote
           return false;
         }
 
-        if (dep_rec.last_claim_height == 0)
+        // v8.4.0: payout_kind == 1 (principal return) — mirror of E2/PF with
+        // explicit reasons. no_prior_claim and zero_accumulated_reward apply to kind 0 ONLY:
+        // a kind-1 withdraw may legally have accumulated_reward == 0.
+        if (w_payout_kind == 1)
         {
-          LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
-            << " reason=no_prior_claim deposit_id=" << w_dep_id);
-          tvc.m_verifivation_failed = true;
-          tvc.m_no_drop_offense = true;
-          return false;
+          if (current_height < PBC_PRINCIPAL_RETURN_HEIGHT)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=principal_before_hact deposit_id=" << w_dep_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (!(dep_rec.unlock_height <= current_height))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=deposit_not_matured deposit_id=" << w_dep_id
+              << " unlock_height=" << dep_rec.unlock_height);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          uint64_t principal_paid_at = 0;
+          if (m_blockchain.get_db().get_property_uint64(pbc_principal_key(w_dep_id), principal_paid_at))
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=principal_already_paid deposit_id=" << w_dep_id
+              << " paid_at=" << principal_paid_at);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          // v8.4.0: a kind-1 withdraw is invalid while the deposit is listed on the marketplace.
+          uint64_t pbc_ask_price = 0;
+          if (m_blockchain.get_db().get_property_uint64(pbc_ask_key(w_dep_id, "_price"), pbc_ask_price) && pbc_ask_price > 0)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=deposit_listed deposit_id=" << w_dep_id
+              << " ask_price=" << pbc_ask_price);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+          if (dep_rec.accumulated_reward > std::numeric_limits<uint64_t>::max() - dep_rec.amount
+              || w_payout_amount != dep_rec.accumulated_reward + dep_rec.amount)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=payout_mismatch deposit_id=" << w_dep_id
+              << " payout=" << w_payout_amount
+              << " accumulated=" << dep_rec.accumulated_reward
+              << " amount=" << dep_rec.amount
+              << " kind=" << (unsigned)w_payout_kind);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
         }
-
-        if (dep_rec.accumulated_reward == 0)
+        else
         {
-          LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
-            << " reason=zero_accumulated_reward deposit_id=" << w_dep_id);
-          tvc.m_verifivation_failed = true;
-          tvc.m_no_drop_offense = true;
-          return false;
-        }
+          if (dep_rec.last_claim_height == 0)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=no_prior_claim deposit_id=" << w_dep_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
 
-        if (w_payout_amount != dep_rec.accumulated_reward)
-        {
-          LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
-            << " reason=payout_mismatch deposit_id=" << w_dep_id
-            << " payout=" << w_payout_amount
-            << " accumulated=" << dep_rec.accumulated_reward);
-          tvc.m_verifivation_failed = true;
-          tvc.m_no_drop_offense = true;
-          return false;
+          if (dep_rec.accumulated_reward == 0)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=zero_accumulated_reward deposit_id=" << w_dep_id);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
+
+          if (w_payout_amount != dep_rec.accumulated_reward)
+          {
+            LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
+              << " reason=payout_mismatch deposit_id=" << w_dep_id
+              << " payout=" << w_payout_amount
+              << " accumulated=" << dep_rec.accumulated_reward);
+            tvc.m_verifivation_failed = true;
+            tvc.m_no_drop_offense = true;
+            return false;
+          }
         }
 
         // ── C4: Ownership signature verification (dep_rec.owner_key + tag 0x55) ──
@@ -562,7 +666,10 @@ namespace cryptonote
             tvc.m_no_drop_offense = true;
             return false;
           }
-          const crypto::hash msg_hash = pbc_build_withdraw_msg_hash(w_dep_id, w_payout_amount);
+          // v8.4.0: kind 1 signs the V2 message (commits to payout_kind); kind 0 keeps V1.
+          const crypto::hash msg_hash = (w_payout_kind == 1)
+              ? pbc_build_withdraw_msg_hash_v2(w_dep_id, w_payout_amount, w_payout_kind)
+              : pbc_build_withdraw_msg_hash(w_dep_id, w_payout_amount);
           if (!crypto::check_signature(msg_hash, dep_rec.owner_key, sig_field.sig))
           {
             LOG_PRINT_L1("PBC mempool precheck: rejected term_withdraw tx=" << id
@@ -3556,6 +3663,15 @@ namespace cryptonote
                     << " skipped in block template — deposit already touched in this template (claim/auto-match/transfer) deposit=" << wdep);
               continue;
             }
+            // v8.4.0: a second TERM_WITHDRAW for the SAME deposit in this template — from
+            // H_ACT on it hard-rejects the whole block (one withdraw per deposit per block).
+            // Skip it at template build.
+            if (tpl_fx.withdraw_made.count(wdep))
+            {
+              MGINFO("PBC PF: TERM_WITHDRAW " << sorted_it->second
+                    << " skipped in block template — second withdraw for same deposit in this template deposit=" << wdep);
+              continue;
+            }
             const uint64_t tpl_h = m_blockchain.get_current_blockchain_height();
             uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
             size_t dep_sz = sizeof(dep_buf);
@@ -3572,6 +3688,20 @@ namespace cryptonote
               // withdraw's owner_sig would then fail at apply. Delay only.
               if (tpl_execution_due.count(wrec.owner_key)) { stale = true; why = "inheritance_execution_due_this_block"; }
               else if (!(wrec.created_height < tpl_h)) { stale = true; why = "deposit_not_yet_created"; }
+              else if (wkind == 1)
+              {
+                // v8.4.0: principal return — mirror of PF at template height.
+                // The kind-0 tests below (prior CLAIM / zero accumulated / payout == accumulated)
+                // do NOT apply: a kind-1 withdraw may legally have accumulated_reward == 0.
+                uint64_t tpl_pp = 0;
+                uint64_t tpl_ask_price = 0;
+                if (tpl_h < PBC_PRINCIPAL_RETURN_HEIGHT) { stale = true; why = "principal_before_hact"; }
+                else if (!(wrec.unlock_height <= tpl_h)) { stale = true; why = "deposit_not_matured"; }
+                else if (m_blockchain.get_db().get_property_uint64(pbc_principal_key(wdep), tpl_pp)) { stale = true; why = "principal_already_paid"; }
+                else if (m_blockchain.get_db().get_property_uint64(pbc_ask_key(wdep, "_price"), tpl_ask_price) && tpl_ask_price > 0) { stale = true; why = "deposit_listed"; }
+                else if (wrec.accumulated_reward > std::numeric_limits<uint64_t>::max() - wrec.amount
+                         || wpayout != wrec.accumulated_reward + wrec.amount) { stale = true; why = "payout_mismatch"; }
+              }
               else if (wrec.last_claim_height == 0 || !(wrec.last_claim_height < tpl_h)) { stale = true; why = "no_prior_claim_in_earlier_block"; }
               else if (wrec.accumulated_reward == 0) { stale = true; why = "zero_accumulated_reward"; }
               else if (wpayout != wrec.accumulated_reward) { stale = true; why = "payout_mismatch"; }
@@ -3991,6 +4121,54 @@ namespace cryptonote
             tpl_fx.inherit_record_exists[cowner.owner_spend_pubkey] = false;
             tpl_execution_due.erase(cowner.owner_spend_pubkey);
           }
+        }
+      }
+
+      // v8.4.0 (3.8c): template ring freeze — a tx whose ring references a term-deposit principal
+      // output is consensus-invalid from H_ACT on (3.2, scan_outputkeys_for_indexes). Exclude it
+      // from the template AND remove it from the pool: it can never become valid again. Removal
+      // reuses the exact prune() sequence; order_it iterates a separate order container, so
+      // erasing sorted_it here does not invalidate the loop.
+      if (m_blockchain.get_current_blockchain_height() >= PBC_PRINCIPAL_RETURN_HEIGHT)
+      {
+        bool pbc_ring_has_deposit = false;
+        for (const auto& vin : tx.vin)
+        {
+          if (vin.type() != typeid(txin_to_key))
+            continue;
+          const auto& in = boost::get<txin_to_key>(vin);
+          if (in.amount != 0)
+            continue;  // deposit principal outputs live in the RCT (amount 0) bucket
+          uint64_t abs_offset = 0;
+          for (const uint64_t rel : in.key_offsets)
+          {
+            abs_offset += rel;
+            const tx_out_index toi = m_blockchain.get_db().get_output_tx_and_index(in.amount, abs_offset);
+            if (toi.second != PBC_DEPOSIT_VOUT_INDEX)
+              continue;
+            uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+            size_t dep_buf_size = PBC_DEPOSIT_RECORD_PACKED_SIZE;
+            if (m_blockchain.get_db().get_pbc_deposit(toi.first, dep_buf, dep_buf_size))
+            {
+              pbc_ring_has_deposit = true;
+              break;
+            }
+          }
+          if (pbc_ring_has_deposit)
+            break;
+        }
+        if (pbc_ring_has_deposit)
+        {
+          // Copy the hash BEFORE removal: remove_tx_from_transient_lists erases the sorted
+          // container element, so sorted_it->second must not be used past that call.
+          const crypto::hash pbc_ring_txid = sorted_it->second;
+          MGINFO("PBC PF: tx " << pbc_ring_txid
+                << " excluded from block template AND removed from pool — ring references a term-deposit principal output (reason=deposit_output_in_ring)");
+          m_blockchain.remove_txpool_tx(pbc_ring_txid);
+          reduce_txpool_weight(meta.weight);
+          remove_transaction_keyimages(tx, pbc_ring_txid);
+          remove_tx_from_transient_lists(sorted_it, pbc_ring_txid, !meta.matches(relay_category::broadcasted));
+          continue;
         }
       }
 

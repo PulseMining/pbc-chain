@@ -354,6 +354,30 @@ inline std::string pbc_withdraw_key(const crypto::hash& withdraw_tx_id, const ch
   hex[64] = '\0';
   return std::string(PBC_DELTA_KEY_PREFIX_WDR) + hex + suffix;
 }
+
+// v8.4.0: LMDB property key recording the block height at which a deposit's principal was
+// returned (payout_kind = 1). Presence of the key == principal already paid. Value = block height.
+// Deleted on reorg revert of the kind-1 withdraw (see Blockchain::pop_block_from_blockchain).
+inline std::string pbc_principal_key(const crypto::hash& deposit_id)
+{
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&deposit_id);
+  char hex[65];
+  for (int i = 0; i < 32; ++i)
+    snprintf(hex + i * 2, 3, "%02x", p[i]);
+  hex[64] = '\0';
+  return std::string("pbc_depprinc_") + hex;
+}
+// v8.4.0: marketplace ask property key for a deposit ("pbc_ask_<deposit_id_hex><suffix>").
+// Shared by the E2/PF/mempool/template/RPC checks of the withdraw rules.
+inline std::string pbc_ask_key(const crypto::hash& deposit_id, const char* suffix)
+{
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&deposit_id);
+  char hex[65];
+  for (int i = 0; i < 32; ++i)
+    snprintf(hex + i * 2, 3, "%02x", p[i]);
+  hex[64] = '\0';
+  return std::string("pbc_ask_") + hex + suffix;
+}
 // Per-field snapshot keys
 // DI/FI: stored as uint128 (16 bytes) via set_property_uint128
 // DA/FA/LH: stored as uint64 (8 bytes) via set_property_uint64

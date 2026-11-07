@@ -3833,12 +3833,24 @@ bool wallet_rpc_server::on_term_withdraw_deposit(const wallet_rpc::COMMAND_RPC_T
 
     // Extract payout_amount from tx_extra for UI convenience
     res.payout_amount = 0;
+    res.principal_included = false;
+    res.principal_amount = 0;
     std::vector<cryptonote::tx_extra_field> extra_fields;
     if (cryptonote::parse_tx_extra(ptx.tx.extra, extra_fields))
     {
       cryptonote::tx_extra_pbc_withdraw_payout pay{};
       if (cryptonote::find_tx_extra_field_by_type(extra_fields, pay))
+      {
         res.payout_amount = pay.payout_amount;
+        res.principal_included = (pay.payout_kind == 1);
+      }
+    }
+    if (res.principal_included)
+    {
+      // v8.4.0: surface the principal amount (deposit principal still on-chain at this point)
+      tools::wallet2::term_deposit_record drec;
+      if (m_wallet->get_term_deposit_by_txid(deposit_id, drec))
+        res.principal_amount = drec.amount;
     }
   }
   catch (const std::exception& e)
@@ -3882,6 +3894,7 @@ bool wallet_rpc_server::on_term_withdraw_deposit(const wallet_rpc::COMMAND_RPC_T
     try
     {
       auto deposits = m_wallet->get_term_deposits();
+      const uint64_t rpc_cur_height = m_wallet->get_blockchain_current_height();
 
       // Apply status filter
       if (req.filter == "locked")
@@ -3926,6 +3939,14 @@ bool wallet_rpc_server::on_term_withdraw_deposit(const wallet_rpc::COMMAND_RPC_T
         e.blocks_remaining = d.blocks_remaining;
         e.eta_seconds      = d.eta_seconds;
         e.eta_human        = rpc_eta_human(d.eta_seconds);
+        e.principal_paid        = d.principal_paid;
+        e.principal_paid_height = d.principal_paid_height;
+        // v8.4.0: principal claimable = amount if mature && !principal_paid && active, else 0
+        e.principal_claimable   = (d.status != tools::wallet2::DEPOSIT_SPENT
+                                && d.status != tools::wallet2::DEPOSIT_ORPHANED
+                                && d.status != tools::wallet2::DEPOSIT_PENDING
+                                && d.unlock_height <= rpc_cur_height
+                                && !d.principal_paid) ? d.amount : 0;
         res.deposits.push_back(e);
       }
       res.current_height = m_wallet->get_blockchain_current_height();
@@ -4154,6 +4175,14 @@ bool wallet_rpc_server::on_term_withdraw_deposit(const wallet_rpc::COMMAND_RPC_T
         e.apy_realized        = 0.0;
         e.blocks_elapsed      = 0;
         e.daemon_found        = false;
+        e.principal_paid        = d.principal_paid;
+        e.principal_paid_height = d.principal_paid_height;
+        // v8.4.0: principal claimable = amount if mature && !principal_paid && active, else 0
+        e.principal_claimable   = (d.status != tools::wallet2::DEPOSIT_SPENT
+                                && d.status != tools::wallet2::DEPOSIT_ORPHANED
+                                && d.status != tools::wallet2::DEPOSIT_PENDING
+                                && d.unlock_height <= current_height
+                                && !d.principal_paid) ? d.amount : 0;
 
         // Accumulate principal & fees regardless of daemon availability
         sum_principal += d.amount;

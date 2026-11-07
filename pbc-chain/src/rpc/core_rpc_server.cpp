@@ -576,6 +576,7 @@ namespace cryptonote
     res.synchronized = check_core_ready();
     res.busy_syncing = m_p2p.get_payload_object().is_busy_syncing();
     res.restricted = restricted;
+    res.pbc_principal_return_height = PBC_PRINCIPAL_RETURN_HEIGHT;  // v8.4.0
 
     res.status = CORE_RPC_STATUS_OK;
     return true;
@@ -3646,6 +3647,18 @@ namespace cryptonote
       // TD-8: owner_key for debug/testing
       res.owner_key           = epee::string_tools::pod_to_hex(rec.owner_key);
 
+      // v8.4.0: once-per-deposit principal payment state
+      {
+        uint64_t pp_height = 0;
+        res.principal_paid = m_core.get_blockchain_storage().get_db().get_property_uint64(
+            pbc_principal_key(deposit_id), pp_height);
+        res.principal_paid_height = res.principal_paid ? pp_height : 0;
+      }
+      // v8.4.0: active marketplace ask for this deposit (0 if not listed)
+      res.ask_price = 0;
+      m_core.get_blockchain_storage().get_db().get_property_uint64(
+          pbc_ask_key(deposit_id, "_price"), res.ask_price);
+
       // TD-7: Compute claimable rewards (with freeze logic for expired deposits)
       const auto& bs = m_core.get_blockchain_storage();
       const auto& state = bs.get_pbc_pool_state();
@@ -3896,6 +3909,12 @@ namespace cryptonote
       entry.weight           = di.rec.weight;
       entry.accumulated_reward = di.rec.accumulated_reward;
     entry.total_withdrawn = di.rec.total_withdrawn;
+      // v8.4.0: once-per-deposit principal payment state
+      {
+        uint64_t pp_height = 0;
+        entry.principal_paid = db.get_property_uint64(pbc_principal_key(di.id), pp_height);
+        entry.principal_paid_height = entry.principal_paid ? pp_height : 0;
+      }
 
       // Compute claimable_now (same logic as get_pbc_deposit_info)
       __uint128_t eff_dep_idx = state.global_deposit_index;
@@ -4901,6 +4920,13 @@ namespace cryptonote
     res.current_dep_idx  = pbc_uint128_to_str(dep.deposit_entry_index);
     res.current_fee_idx  = pbc_uint128_to_str(dep.fee_entry_index);
     res.is_mature        = (dep.unlock_height <= current_height);
+
+    // v8.4.0: once-per-deposit principal payment state
+    {
+      uint64_t pp_height = 0;
+      res.principal_paid = db.get_property_uint64(pbc_principal_key(deposit_id), pp_height);
+      res.principal_paid_height = res.principal_paid ? pp_height : 0;
+    }
 
     // Claimable now (pre-transfer)
     __uint128_t eff_dep = state.global_deposit_index;

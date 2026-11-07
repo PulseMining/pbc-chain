@@ -171,7 +171,7 @@ static void pbc_delete_packed_props(cryptonote::BlockchainDB *db, const std::str
 // ── Market Ask LMDB helpers ──────────────────────────────────────────────────
 static std::string pbc_ask_dep_key(const crypto::hash &dep_id, const char *suffix)
 {
-  return std::string("pbc_ask_") + epee::string_tools::pod_to_hex(dep_id) + suffix;
+  return cryptonote::pbc_ask_key(dep_id, suffix);
 }
 
 static bool pbc_ask_list_find(const cryptonote::BlockchainDB *db, const crypto::hash &dep_id, uint64_t &out_idx)
@@ -672,6 +672,26 @@ bool Blockchain::scan_outputkeys_for_indexes(size_t tx_version, const txin_to_ke
           output_index = outputs.at(count);
         else
           output_index = m_db->get_output_key(tx_in_to_key.amount, i);
+
+        // v8.4.0: from H_ACT on, a term-deposit principal output (vout[PBC_DEPOSIT_VOUT_INDEX]
+        // of a TERM_DEPOSIT tx) is FROZEN: it may never appear in any ring (real input or decoy).
+        // m_db->height() is the height of the block being validated (mempool admission sees the same
+        // rule at the same height), so a resync from zero applies the rule from the same block.
+        if (m_db->height() >= PBC_PRINCIPAL_RETURN_HEIGHT && tx_in_to_key.amount == 0)
+        {
+          const tx_out_index toi = m_db->get_output_tx_and_index(0, i);
+          if (toi.second == PBC_DEPOSIT_VOUT_INDEX)
+          {
+            uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+            size_t dep_buf_size = PBC_DEPOSIT_RECORD_PACKED_SIZE;
+            if (m_db->get_pbc_deposit(toi.first, dep_buf, dep_buf_size))
+            {
+              MERROR_VER("PBC principal: ring references a term-deposit output tx=" << toi.first
+                << " (frozen since H_ACT)");
+              return false;
+            }
+          }
+        }
 
         // call to the passed boost visitor to grab the public key for the output
         if (!vis.handle_output(output_index.unlock_time, output_index.pubkey, output_index.commitment))
@@ -1227,13 +1247,20 @@ block Blockchain::pop_block_from_blockchain()
         continue;
       }
 
+      // v8.4.0: principal part of the payout (0 for kind 0 / legacy entries — key absent).
+      // Pools and pending are restored with (payout - principal_part) ONLY, total_withdrawn too,
+      // and the once-per-deposit principal marker is removed when this revert is for a kind-1 payout.
+      uint64_t principal_part = 0;
+      m_db->get_property_uint64(pbc_withdraw_key(w_tx_id, "_pp"), principal_part);  // 0 if absent
+      const uint64_t reward_part = payout_amount - principal_part;
+
       // Restore pool balances + pending reserve
       uint64_t dep_debit = 0, fee_debit = 0;
       m_db->get_property_uint64(pbc_withdraw_key(w_tx_id, "_dp"), dep_debit);
       m_db->get_property_uint64(pbc_withdraw_key(w_tx_id, "_fp"), fee_debit);
       m_pbc_pool_state.deposit_pool_balance += dep_debit;
       m_pbc_pool_state.fee_pool_balance     += fee_debit;
-      m_pbc_pool_state.pending_rewards_total += payout_amount;
+      m_pbc_pool_state.pending_rewards_total += reward_part;
 
       // Restore deposit record accumulated_reward
       uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
@@ -1243,8 +1270,8 @@ block Blockchain::pop_block_from_blockchain()
         pbc_deposit_record dep_rec;
         pbc_unpack_deposit_record(dep_buf, dep_size, dep_rec);
         dep_rec.accumulated_reward = prev_ar;
-        if (dep_rec.total_withdrawn >= payout_amount)
-          dep_rec.total_withdrawn -= payout_amount;
+        if (dep_rec.total_withdrawn >= reward_part)
+          dep_rec.total_withdrawn -= reward_part;
         else
           dep_rec.total_withdrawn = 0;  // safety clamp
 
@@ -1257,10 +1284,16 @@ block Blockchain::pop_block_from_blockchain()
       m_db->delete_property(pbc_withdraw_key(w_tx_id, "_ar"));
       m_db->delete_property(pbc_withdraw_key(w_tx_id, "_dp"));
       m_db->delete_property(pbc_withdraw_key(w_tx_id, "_fp"));
+      if (principal_part > 0)
+      {
+        m_db->delete_property(pbc_principal_key(deposit_id));
+        m_db->delete_property(pbc_withdraw_key(w_tx_id, "_pp"));
+      }
 
       MGINFO("PBC PF: TERM_WITHDRAW reverted: tx=" << w_tx_id
         << " deposit=" << deposit_id
-        << " restored_accumulated=" << prev_ar);
+        << " restored_accumulated=" << prev_ar
+        << " principal_part=" << principal_part);
     }
 
     // ── 0ab. Marketplace: revert direct owner transfers ────────────────────
@@ -4266,8 +4299,29 @@ bool Blockchain::get_outs(const COMMAND_RPC_GET_OUTPUTS_BIN::request& req, COMMA
       return false;
     }
     const uint8_t hf_version = m_hardfork->get_current_version();
-    for (const auto &t: data)
-      res.outs.push_back({t.pubkey, t.commitment, is_tx_spendtime_unlocked(t.unlock_time, hf_version), t.height, crypto::null_hash});
+    // v8.4.0: within PBC_PRINCIPAL_DECOY_MARGIN of H_ACT (and after it), announce
+    // term-deposit principal outputs (vout[PBC_DEPOSIT_VOUT_INDEX] of a TERM_DEPOSIT tx) as LOCKED,
+    // so every wallet — old or new — drops them as decoys (wallet2 tx_add_fake_output,
+    // "don't add locked outs"). Node policy, not consensus.
+    const bool pbc_freeze_decoys =
+      (m_db->height() + PBC_PRINCIPAL_DECOY_MARGIN >= PBC_PRINCIPAL_RETURN_HEIGHT);
+    for (size_t i = 0; i < data.size(); ++i)
+    {
+      const auto &t = data[i];
+      bool unlocked = is_tx_spendtime_unlocked(t.unlock_time, hf_version);
+      if (unlocked && pbc_freeze_decoys && req.outputs[i].amount == 0)
+      {
+        const tx_out_index toi = m_db->get_output_tx_and_index(req.outputs[i].amount, req.outputs[i].index);
+        if (toi.second == PBC_DEPOSIT_VOUT_INDEX)
+        {
+          uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
+          size_t dep_buf_size = PBC_DEPOSIT_RECORD_PACKED_SIZE;
+          if (m_db->get_pbc_deposit(toi.first, dep_buf, dep_buf_size))
+            unlocked = false;
+        }
+      }
+      res.outs.push_back({t.pubkey, t.commitment, unlocked, t.height, crypto::null_hash});
+    }
 
     if (req.get_txid)
     {
@@ -5808,7 +5862,7 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     std::string w_fail;
     const pbc_withdraw_result wres = pbc_validate_withdraw_tx(tx, dep_id, payout_amount, payout_kind, w_fail);
     CHECK_AND_ASSERT_MES(wres == PBC_WITHDRAW_VALID, false, "PBC withdraw: pbc_validate_withdraw_tx failed: " + w_fail);
-    CHECK_AND_ASSERT_MES(payout_kind == 0, false, "PBC withdraw: unsupported payout_kind");
+    CHECK_AND_ASSERT_MES(payout_kind <= 1, false, "PBC withdraw: unsupported payout_kind");  // v8.4.0: kind 1 = principal return
     CHECK_AND_ASSERT_MES(payout_amount > 0, false, "PBC withdraw: payout_amount must be > 0");
 
     // E2.3: Coherence vin.deposit_id vs extra deposit_id
@@ -5838,12 +5892,37 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
     const uint64_t cur_height = m_db->height();
     CHECK_AND_ASSERT_MES(dep_rec.created_height < cur_height, false,
         "PBC withdraw: deposit not yet active");
-    CHECK_AND_ASSERT_MES(dep_rec.last_claim_height != 0 && dep_rec.last_claim_height < cur_height, false,
-        "PBC withdraw: no prior confirmed CLAIM");
-    CHECK_AND_ASSERT_MES(dep_rec.accumulated_reward > 0, false,
-        "PBC withdraw: accumulated_reward is 0");
-    CHECK_AND_ASSERT_MES(dep_rec.accumulated_reward == payout_amount, false,
-        "PBC withdraw: payout_amount does not match accumulated_reward");
+    if (payout_kind == 1)
+    {
+      // v8.4.0: principal return — height gate, maturity, once-per-deposit, payout composition.
+      // Mirrors the PF section, which re-checks the same conditions with block_height.
+      CHECK_AND_ASSERT_MES(cur_height >= PBC_PRINCIPAL_RETURN_HEIGHT, false,
+          "PBC withdraw: principal payout before H_ACT");
+      CHECK_AND_ASSERT_MES(dep_rec.unlock_height <= cur_height, false,
+          "PBC withdraw: deposit not matured");
+      uint64_t principal_paid_at = 0;
+      CHECK_AND_ASSERT_MES(!m_db->get_property_uint64(pbc_principal_key(dep_id), principal_paid_at), false,
+          "PBC withdraw: principal already paid");
+      // v8.4.0: a kind-1 withdraw is invalid while the deposit is listed on the marketplace
+      // (the principal must not be withdrawn out from under a buyer). Kind 0 is unchanged.
+      uint64_t ask_price = 0;
+      const bool ask_active = m_db->get_property_uint64(pbc_ask_dep_key(dep_id, "_price"), ask_price) && ask_price > 0;
+      CHECK_AND_ASSERT_MES(!ask_active, false, "PBC withdraw: deposit is listed on the marketplace");
+      CHECK_AND_ASSERT_MES(dep_rec.accumulated_reward <= std::numeric_limits<uint64_t>::max() - dep_rec.amount, false,
+          "PBC withdraw: payout overflow");
+      CHECK_AND_ASSERT_MES(payout_amount == dep_rec.accumulated_reward + dep_rec.amount, false,
+          "PBC withdraw: payout_amount != accumulated_reward + amount");
+    }
+    else
+    {
+      // payout_kind == 0 — strictly unchanged v8.3.5 semantics.
+      CHECK_AND_ASSERT_MES(dep_rec.last_claim_height != 0 && dep_rec.last_claim_height < cur_height, false,
+          "PBC withdraw: no prior confirmed CLAIM");
+      CHECK_AND_ASSERT_MES(dep_rec.accumulated_reward > 0, false,
+          "PBC withdraw: accumulated_reward is 0");
+      CHECK_AND_ASSERT_MES(dep_rec.accumulated_reward == payout_amount, false,
+          "PBC withdraw: payout_amount does not match accumulated_reward");
+    }
 
     // E2.7: Ownership signature (tag 0x55) — verify with dep_rec.owner_key
     CHECK_AND_ASSERT_MES(dep_rec.owner_key != crypto::null_pkey, false,
@@ -5853,7 +5932,10 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
       tx_extra_pbc_owner_sig sig_field;
       CHECK_AND_ASSERT_MES(parse_tx_extra(tx.extra, fields) && find_tx_extra_field_by_type(fields, sig_field),
           false, "PBC withdraw: owner_sig (0x55) not found in tx_extra");
-      const crypto::hash msg_hash = pbc_build_withdraw_msg_hash(dep_id, payout_amount);
+      // v8.4.0: kind 1 signs the V2 message (commits to payout_kind); kind 0 keeps V1.
+      const crypto::hash msg_hash = (payout_kind == 1)
+          ? pbc_build_withdraw_msg_hash_v2(dep_id, payout_amount, payout_kind)
+          : pbc_build_withdraw_msg_hash(dep_id, payout_amount);
       CHECK_AND_ASSERT_MES(crypto::check_signature(msg_hash, dep_rec.owner_key, sig_field.sig),
           false, "PBC withdraw: owner_sig verification failed");
     }
@@ -5875,7 +5957,9 @@ bool Blockchain::check_tx_inputs(transaction& tx, tx_verification_context &tvc, 
 
       std::vector<tx_extra_field> pqc_fields;
       parse_tx_extra(tx.extra, pqc_fields);
-      const crypto::hash pqc_msg_hash = pbc_build_pqc_withdraw_msg_hash(dep_id, payout_amount);
+      const crypto::hash pqc_msg_hash = (payout_kind == 1)
+          ? pbc_build_pqc_withdraw_msg_hash_v2(dep_id, payout_amount, payout_kind)
+          : pbc_build_pqc_withdraw_msg_hash(dep_id, payout_amount);
 
       // Load the Dilithium key registered under the deposit owner (if any).
       const std::string owner_hex = epee::string_tools::pod_to_hex(dep_rec.owner_key);
@@ -9941,6 +10025,22 @@ leave:
             }
           }
 
+          // v8.4.0: from H_ACT on, a second TERM_WITHDRAW for the same deposit in the
+          // same block is a HARD rejection of the whole block (one withdraw per deposit
+          // per block). Conservative: covers kind-0 + kind-0 duplicates and reorg-returned
+          // pool duplicates too. Below H_ACT the legacy behaviour is strictly unchanged.
+          if (block_height >= PBC_PRINCIPAL_RETURN_HEIGHT && pbc_withdrawn_this_block.count(deposit_id))
+          {
+            MERROR("PBC PF: duplicate TERM_WITHDRAW for the same deposit in one block: deposit=" << deposit_id
+              << " block=" << block_height << " tx=" << w_tx_id);
+            if (pbc_started_batch) m_db->batch_abort();
+            m_batch_success = false;
+            pbc_poison_txid = w_tx_id;
+            return_txs_to_pool();
+            bvc.m_verifivation_failed = true;
+            return false;
+          }
+
           // 1. Read deposit from DB
           uint8_t dep_buf[PBC_DEPOSIT_RECORD_PACKED_SIZE];
           size_t dep_buf_size = PBC_DEPOSIT_RECORD_PACKED_SIZE;
@@ -9977,8 +10077,75 @@ leave:
             return false;
           }
 
-          // 3. Must have a prior confirmed CLAIM that created accumulated_reward
-          if (dep_rec.last_claim_height == 0 || !(dep_rec.last_claim_height < block_height))
+          // v8.4.0: payout_kind == 1 (principal return) — same conditions as E2,
+          // with block_height instead of m_db->height() (PF runs under the batch apply height).
+          if (payout_kind == 1)
+          {
+            if (block_height < PBC_PRINCIPAL_RETURN_HEIGHT)
+            {
+              MERROR("PBC PF: TERM_WITHDRAW principal payout before H_ACT: deposit=" << deposit_id
+                << " block=" << block_height << " tx=" << w_tx_id);
+              if (pbc_started_batch) m_db->batch_abort();
+              m_batch_success = false;
+              pbc_poison_txid = w_tx_id;
+              return_txs_to_pool();
+              bvc.m_verifivation_failed = true;
+              return false;
+            }
+            if (!(dep_rec.unlock_height <= block_height))
+            {
+              MERROR("PBC PF: TERM_WITHDRAW deposit not matured: deposit=" << deposit_id
+                << " unlock_height=" << dep_rec.unlock_height
+                << " block=" << block_height);
+              if (pbc_started_batch) m_db->batch_abort();
+              m_batch_success = false;
+              pbc_poison_txid = w_tx_id;
+              return_txs_to_pool();
+              bvc.m_verifivation_failed = true;
+              return false;
+            }
+            uint64_t principal_paid_at = 0;
+            if (m_db->get_property_uint64(pbc_principal_key(deposit_id), principal_paid_at))
+            {
+              MERROR("PBC PF: TERM_WITHDRAW principal already paid: deposit=" << deposit_id
+                << " paid_at=" << principal_paid_at << " tx=" << w_tx_id);
+              if (pbc_started_batch) m_db->batch_abort();
+              m_batch_success = false;
+              pbc_poison_txid = w_tx_id;
+              return_txs_to_pool();
+              bvc.m_verifivation_failed = true;
+              return false;
+            }
+            // v8.4.0: a kind-1 withdraw is invalid while the deposit is listed on the marketplace.
+            {
+              uint64_t ask_price = 0;
+              if (m_db->get_property_uint64(pbc_ask_dep_key(deposit_id, "_price"), ask_price) && ask_price > 0)
+              {
+                MERROR("PBC PF: TERM_WITHDRAW deposit listed on marketplace: deposit=" << deposit_id
+                  << " ask_price=" << ask_price << " tx=" << w_tx_id);
+                if (pbc_started_batch) m_db->batch_abort();
+                m_batch_success = false;
+                pbc_poison_txid = w_tx_id;
+                return_txs_to_pool();
+                bvc.m_verifivation_failed = true;
+                return false;
+              }
+            }
+            if (dep_rec.accumulated_reward > std::numeric_limits<uint64_t>::max() - dep_rec.amount)
+            {
+              MERROR("PBC PF: TERM_WITHDRAW payout overflow: deposit=" << deposit_id << " tx=" << w_tx_id);
+              if (pbc_started_batch) m_db->batch_abort();
+              m_batch_success = false;
+              pbc_poison_txid = w_tx_id;
+              return_txs_to_pool();
+              bvc.m_verifivation_failed = true;
+              return false;
+            }
+          }
+
+          // 3. Must have a prior confirmed CLAIM that created accumulated_reward (payout_kind 0 only;
+          //    kind 1 may legally withdraw with accumulated_reward == 0 — v8.4.0)
+          if (payout_kind == 0 && (dep_rec.last_claim_height == 0 || !(dep_rec.last_claim_height < block_height)))
           {
             MERROR("PBC PF: TERM_WITHDRAW requires prior CLAIM in earlier block: deposit=" << deposit_id
               << " last_claim_height=" << dep_rec.last_claim_height
@@ -9993,11 +10160,13 @@ leave:
             return false;
           }
 
-          if (dep_rec.accumulated_reward == 0)
+          if (payout_kind == 0 && dep_rec.accumulated_reward == 0)
           {
             // May be a duplicate TX for a deposit already withdrawn earlier in this same block
             // (e.g. old TX returned to pool after reorg + new TX submitted by wallet).
             // Skip silently rather than aborting the block.
+            // v8.4.0: from H_ACT on this case is unreachable — the 3.11 guard above hard-rejects
+            // the block first. The skip stays for pre-H_ACT blocks only (kind 0).
             if (pbc_withdrawn_this_block.count(deposit_id))
             {
               MWARNING("PBC PF: TERM_WITHDRAW duplicate in block (deposit already withdrawn): deposit=" << deposit_id
@@ -10016,13 +10185,17 @@ leave:
             return false;
           }
 
-          // 4. Payout must match the current pending accumulated_reward exactly
-          if (payout_amount != dep_rec.accumulated_reward)
+          // 4. Payout must match the current pending accumulated_reward exactly (kind 0), or
+          //    accumulated_reward + principal (kind 1 — v8.4.0)
+          const uint64_t expected_payout = dep_rec.accumulated_reward + (payout_kind == 1 ? dep_rec.amount : 0);
+          if (payout_amount != expected_payout)
           {
             MERROR("PBC PF: TERM_WITHDRAW payout mismatch: deposit=" << deposit_id
               << " tx=" << w_tx_id
               << " payout_amount=" << payout_amount
-              << " accumulated_reward=" << dep_rec.accumulated_reward);
+              << " accumulated_reward=" << dep_rec.accumulated_reward
+              << " amount=" << dep_rec.amount
+              << " kind=" << (unsigned)payout_kind);
             if (pbc_started_batch) m_db->batch_abort();
             m_batch_success = false;
             // PBC: return taken txs to the pool on block failure (was leaking
@@ -10063,7 +10236,11 @@ leave:
               bvc.m_verifivation_failed = true;
               return false;
             }
-            const crypto::hash msg_hash = pbc_build_withdraw_msg_hash(deposit_id, payout_amount);
+            // v8.4.0: PF verifies owner_sig ONLY (no PQC co-signature check in PF — it is done in
+            // E2/check_tx_inputs and in the mempool precheck). Kind 1 uses the V2 message.
+            const crypto::hash msg_hash = (payout_kind == 1)
+                ? pbc_build_withdraw_msg_hash_v2(deposit_id, payout_amount, payout_kind)
+                : pbc_build_withdraw_msg_hash(deposit_id, payout_amount);
             if (!crypto::check_signature(msg_hash, dep_rec.owner_key, w_sig_field.sig))
             {
               MERROR("PBC PF: TERM_WITHDRAW owner_sig invalid: deposit=" << deposit_id
@@ -10118,27 +10295,50 @@ leave:
           // 5. Save pre-withdraw state for reorg reversal
           m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_ar"), dep_rec.accumulated_reward);
 
-          // 5b. Apply: debit pools + pending reserve (WITHDRAW = payment)
-          CHECK_AND_ASSERT_MES(m_pbc_pool_state.pending_rewards_total >= payout_amount, false,
-              "PBC PF: pending_rewards_total underflow on withdraw");
-          m_pbc_pool_state.pending_rewards_total -= payout_amount;
+          // v8.4.0: split the payout. reward_part is debited from the pools exactly as in
+          // v8.3.5; principal_part (payout_kind 1) is pure subsidy emission — the pools do NOT move
+          // for it. Reorg reversal restores using payout - principal_part, stored in "_pp".
+          const uint64_t reward_part    = dep_rec.accumulated_reward;
+          const uint64_t principal_part = (payout_kind == 1) ? dep_rec.amount : 0;
 
-          uint64_t dep_debit = payout_amount;
-          if (dep_debit > m_pbc_pool_state.deposit_pool_balance)
-            dep_debit = m_pbc_pool_state.deposit_pool_balance;
-          uint64_t fee_debit = payout_amount - dep_debit;
-          CHECK_AND_ASSERT_MES(m_pbc_pool_state.fee_pool_balance >= fee_debit, false,
-              "PBC PF: fee_pool_balance insufficient for withdraw after deposit_pool depleted");
+          // 5b. Apply: debit pools + pending reserve (reward part ONLY; underflow guards skipped
+          // when reward_part == 0 — kind 1 without accrued reward)
+          if (reward_part > 0)
+          {
+            CHECK_AND_ASSERT_MES(m_pbc_pool_state.pending_rewards_total >= reward_part, false,
+                "PBC PF: pending_rewards_total underflow on withdraw");
+            m_pbc_pool_state.pending_rewards_total -= reward_part;
 
-          m_pbc_pool_state.deposit_pool_balance -= dep_debit;
-          m_pbc_pool_state.fee_pool_balance     -= fee_debit;
+            uint64_t dep_debit = reward_part;
+            if (dep_debit > m_pbc_pool_state.deposit_pool_balance)
+              dep_debit = m_pbc_pool_state.deposit_pool_balance;
+            uint64_t fee_debit = reward_part - dep_debit;
+            CHECK_AND_ASSERT_MES(m_pbc_pool_state.fee_pool_balance >= fee_debit, false,
+                "PBC PF: fee_pool_balance insufficient for withdraw after deposit_pool depleted");
 
-          // Store pool debits for reorg reversal
-          m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_dp"), dep_debit);
-          m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_fp"), fee_debit);
+            m_pbc_pool_state.deposit_pool_balance -= dep_debit;
+            m_pbc_pool_state.fee_pool_balance     -= fee_debit;
 
-          // 6. Apply: track lifetime withdrawn, then zero accumulated_reward
-          dep_rec.total_withdrawn += payout_amount;
+            // Store pool debits for reorg reversal
+            m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_dp"), dep_debit);
+            m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_fp"), fee_debit);
+          }
+          else
+          {
+            // reward_part == 0: no pool movement, zero deltas for the revert path
+            m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_dp"), 0);
+            m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_fp"), 0);
+          }
+
+          // v8.4.0: once-per-deposit principal payment marker + reorg delta
+          if (payout_kind == 1)
+          {
+            m_db->set_property_uint64(pbc_principal_key(deposit_id), block_height);
+            m_db->set_property_uint64(pbc_withdraw_key(w_tx_id, "_pp"), principal_part);
+          }
+
+          // 6. Apply: track lifetime withdrawn (reward part), then zero accumulated_reward
+          dep_rec.total_withdrawn += reward_part;
           dep_rec.accumulated_reward = 0;
 
           // 7. Store updated deposit record
@@ -10150,7 +10350,8 @@ leave:
           pbc_withdrawn_this_block.insert(deposit_id);
           MGINFO("PBC PF: TERM_WITHDRAW applied: tx=" << w_tx_id
             << " deposit=" << deposit_id
-            << " payout=" << payout_amount);
+            << " payout=" << payout_amount
+            << " principal=" << principal_part);
 
           // ── Proof-of-life: reset inactivity clock for inherit ──
           // TERM_WITHDRAW requires the owner's key image. Proves principal is alive.

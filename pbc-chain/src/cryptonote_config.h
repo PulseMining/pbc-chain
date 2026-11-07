@@ -171,6 +171,11 @@
 // + 30 = 8787. PROD value set by Stef at release time — the ONLY difference
 // between test and release builds is this line.
 #define PBC_MARKET_CONSENSUS_HEIGHT       28400  // PROD : fixée par Stef 2026-09-11 (accord Aria) ; test : 8787
+// ── v8.4.0 hard fork: principal return. Height-gated ONLY (no hardforks.cpp entry,
+// same precedent as PBC_MARKET_CONSENSUS_HEIGHT). Below this height the code behaves
+// byte-identically to v8.3.5. Activation height of this release: the value below.
+#define PBC_PRINCIPAL_RETURN_HEIGHT       96840  // hardfork v8.4.0
+#define PBC_PRINCIPAL_DECOY_MARGIN        720    // get_outs policy margin before H_ACT
 #define PBC_TIER_270D_BLOCKS              388800
 #define PBC_TIER_365D_BLOCKS              525600
 
@@ -225,6 +230,10 @@
 #define TX_EXTRA_TAG_PBC_INHERIT_TESTAMENT 0x65  // A4: tx porteur du testament on-chain
 #define PBC_DEPOSIT_OWNER_MSG_PREFIX    "PBC_DEPOSIT_OWNER_V1"
 #define PBC_WITHDRAW_OWNER_MSG_PREFIX   "PBC_WITHDRAW_V1"
+// v8.4.0: V2 withdraw message (payout_kind = 1, principal return). The signed message commits to
+// the payout_kind, so a kind-1 signature can never be replayed as kind-0 nor vice versa.
+// msg = PBC_WITHDRAW_OWNER_MSG_PREFIX_V2 || deposit_id(32) || payout_amount(8 LE) || payout_kind(1)
+#define PBC_WITHDRAW_OWNER_MSG_PREFIX_V2 "PBC_WITHDRAW_V2"
 // M2 fix — PQC registration proof-of-possession. The owner_sig on a PQC_REGISTER TX signs
 // H(PBC_PQC_REGISTER_MSG_PREFIX || owner_spend_pubkey || pqc_hash) with the spend secret key,
 // proving the registrant controls the spend key it is binding PQC keys to, and committing to
@@ -244,6 +253,9 @@
 // ordinary RingCT transfers quantum-safe (their spend authority is the CLSAG ring, whose anonymity
 // forbids a naive per-output PQC signature — see QUANTUM_ANALYSIS.md).
 #define PBC_PQC_WITHDRAW_MSG_PREFIX     "PBC_PQC_WITHDRAW_V1"
+// v8.4.0: PQC co-signature message for payout_kind = 1 (current PQC prefix + "_V2", same layout
+// as the Ed25519 V2 message). Kind 0 keeps PBC_PQC_WITHDRAW_MSG_PREFIX unchanged.
+#define PBC_PQC_WITHDRAW_MSG_PREFIX_V2  "PBC_PQC_WITHDRAW_V1_V2"
 
 // Hard-fork version at which a valid Dilithium co-signature becomes MANDATORY on TERM_WITHDRAW and
 // MARKET_PAYOUT_CLAIM TXs (Problem 2). Before this version the co-signature is accepted-if-present

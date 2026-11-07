@@ -770,6 +770,7 @@ html, body {
         <div class="card-label">Available (Liquid)</div>
         <div class="card-value green" id="d-available">—</div>
         <div class="card-sub" id="d-avail-pct"></div>
+        <div class="card-sub" id="d-principal-banner" style="display:none;color:var(--gold)"></div>
       </div>
       <div class="card">
         <div class="card-label">Vesting Locked</div>
@@ -1053,6 +1054,7 @@ html, body {
         <table class="tbl">
           <thead><tr>
             <th>TXID</th><th>Tier</th><th class="right">Deposited</th>
+            <th class="right">Principal</th>
             <th class="right">Claimable</th><th class="right">Pending</th>
             <th class="right">Earned</th><th class="right">Est. APY</th><th class="right">Eff. APY</th>
             <th class="right">Days Passed</th><th class="right">Days Left</th>
@@ -2124,7 +2126,11 @@ async function loadDashboard() {
       if (deps.deposits) {
         deps.deposits.forEach(d => {
           if (d.status === 'locked')    dep_locked += Number(d.amount || 0);
-          if (d.status === 'unlocked')  dep_unlocked += Number(d.amount || 0);
+          // v8.4.0: matured deposit whose principal has NOT been paid back yet — the
+          // protocol still owes it → counts in patrimony until the kind-1 withdraw
+          // lands the principal in the wallet balance (then principal_paid = true and
+          // it is excluded here to avoid double-counting).
+          if (d.status === 'unlocked' && !d.principal_paid)  dep_unlocked += Number(d.amount || 0);
           dep_claimable += Number(d.claimable || 0);
           dep_claimed += Number(d.accumulated_reward || 0);
         });
@@ -2192,11 +2198,11 @@ async function loadDashboard() {
     // True patrimony = wallet outputs + deposit principal (locked at protocol) + accrued
     // interest (claimable + accumulated_reward, both recorded on-chain and owed by the
     // protocol). OPTION B (04/09, Stef): include BOTH so patrimony == income − fees.
-    const patrimony = balance + dep_locked + dep_claimable + dep_claimed;
+    const patrimony = balance + dep_locked + dep_unlocked + dep_claimable + dep_claimed;
 
     document.getElementById('d-patrimony').textContent = fmtShort(patrimony);
     document.getElementById('d-patrimony-sub').innerHTML =
-      `PBC — incl. ${fmtShort(dep_locked)} deposits` +
+      `PBC — incl. ${fmtShort(dep_locked + dep_unlocked)} deposits` +
       (dep_claimable + dep_claimed > 0 ? ` · ${fmtShort(dep_claimable + dep_claimed)} accrued interest` : '');
     document.getElementById('d-total-mined').textContent = fmtShort(totalMined);
     document.getElementById('d-total-income').textContent = fmtShort(totalIncome);
@@ -2205,6 +2211,22 @@ async function loadDashboard() {
       (otherReceived > 0 ? ` · +${fmtShort(otherReceived)} other received (pool/transfers)` : '') +
       (dep_claimable + dep_claimed > 0 ? ` · incl. ${fmtShort(dep_claimable + dep_claimed)} accrued (claimable)` : '');
     document.getElementById('d-available').textContent = fmtShort(liquid);
+    // v8.4.0: discreet banner while the principal return fork is not active yet
+    // (nothing shown when the daemon does not expose pbc_principal_return_height).
+    try {
+      const gi = await daemon_rpc('get_info');
+      const hAct = Number(gi.pbc_principal_return_height || 0);
+      pbcHAct = hAct;  // shared with the deposits table (kind-1 button gating)
+      const pb = document.getElementById('d-principal-banner');
+      if (pb) {
+        if (hAct > 0 && height < hAct) {
+          pb.textContent = 'Principal return activates at block ' + hAct.toLocaleString();
+          pb.style.display = '';
+        } else {
+          pb.style.display = 'none';
+        }
+      }
+    } catch(e) {}
     document.getElementById('d-vesting').textContent = fmtShort(vesting_locked);
     document.getElementById('d-deposits').textContent = fmtShort(dep_locked);
     document.getElementById('d-interest-claimable').textContent = fmtShort(dep_claimable);
@@ -2577,6 +2599,7 @@ async function getBlocksPerDay() {
 const _VDATE_BPD = 1440;
 let _genesisTs = null;  // Unix timestamp of block 0, set by init
 let _chainHeight = 0;   // Last known blockchain height, updated by loadDashboard/loadMarket
+let pbcHAct = 0;        // v8.4.0: principal return activation height from daemon get_info (0 = unknown)
 let _genesisSrc = null;  // How genesis was determined (for debug) or on-demand
 
 // Lazy genesis: if _genesisTs not set yet, estimate from current height
@@ -2980,7 +3003,9 @@ async function loadDeposits() {
     let allDeposits = [];
     let _currentHeight = 0;
     try {
-      const accrued = await rpc('get_deposits_accrued', { filter: 'all', include_spent: false });
+      // v8.4.0: include_spent so deposits closed by a principal payout still appear
+      // (grayed "closed" line); the status filter above keeps them out of "active".
+      const accrued = await rpc('get_deposits_accrued', { filter: 'all', include_spent: true });
       if (accrued && accrued.deposits) allDeposits = accrued.deposits;
       _currentHeight = Number(accrued.current_height || 0); _chainHeight = _currentHeight;
     } catch(e) {
@@ -3079,7 +3104,7 @@ async function loadDeposits() {
     // Table
     const tbody = document.getElementById('depBody');
     if (deposits.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="14" class="text" style="text-align:center;padding:20px;color:var(--text-dim)">No deposits found</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="16" class="text" style="text-align:center;padding:20px;color:var(--text-dim)">No deposits found</td></tr>';
       return;
     }
 
@@ -3087,6 +3112,20 @@ async function loadDeposits() {
 
     tbody.innerHTML = deposits.map(d => {
       const isUnlocked = d.status === 'unlocked';
+      // v8.4.0: principal state (from get_deposits_accrued)
+      const principalPaid = !!d.principal_paid;
+      const principalPaidH = Number(d.principal_paid_height || 0);
+      // v8.4.0: the kind-1 withdraw only exists once the fork is active (10-block margin,
+      // same rule as the wallet). Before that, show the activation height instead.
+      const kind1Active = pbcHAct > 0 && _currentHeight >= pbcHAct + 10;
+      // closed = principal returned AND nothing left to claim/withdraw
+      const principalCell = principalPaid
+        ? `<td class="right" style="color:var(--text-dim)" title="principal returned at block ${principalPaidH}">✓ returned</td>`
+        : (isUnlocked
+            ? (kind1Active
+                ? '<td class="right" style="color:var(--gold)">pending</td>'
+                : `<td class="right" style="color:var(--text-dim)">${pbcHAct > 0 ? 'pending (from block ' + pbcHAct.toLocaleString() + ')' : 'pending'}</td>`)
+            : '<td class="right" style="color:var(--text-dim)">—</td>');
       const statusLabel = isUnlocked ? '✓ matured' : (d.status || 'locked');
       const statusBadge = `<span class="badge ${d.status || 'locked'}">${statusLabel}</span>`;
 
@@ -3138,10 +3177,16 @@ async function loadDeposits() {
 
             // Withdraw rewards button — available when there is pending (claimed)
             // reward and no withdraw already in mempool (PBC FIX 29/08).
+            // v8.4.0: a matured deposit whose principal is still unpaid is withdrawable
+            // too (kind 1 = rewards + principal, once per deposit) even with 0 claimed.
+      const withdrawKind1 = isUnlocked && !principalPaid && kind1Active;
       const withdrawBtn = (pendDepKind === 'withdraw')
         ? '<span style="font-size:10px;color:var(--text-dim);white-space:nowrap" title="Withdraw transaction already in mempool — wait for confirmation">⏳ withdraw in mempool…</span>'
-        : (claimedNum > 0)
-          ? `<button class="btn btn-sm" style="background:transparent;color:var(--green);border:1px solid var(--green);font-size:10px;padding:3px 8px;margin-left:4px" onclick="doWithdrawRewards('${d.txid}', ${claimedNum})">Withdraw</button>`
+        : (claimedNum > 0 || withdrawKind1)
+          ? `<button class="btn btn-sm" style="background:transparent;color:var(--green);border:1px solid var(--green);font-size:10px;padding:3px 8px;margin-left:4px" onclick="doWithdrawRewards('${d.txid}', ${claimedNum})">${withdrawKind1 ? 'Withdraw principal + interest' : 'Withdraw'}</button>` +
+            (withdrawKind1 && claimableNum > 0
+              ? '<div style="font-size:9px;color:var(--text-dim);max-width:150px;white-space:normal;margin-top:2px" title="Unclaimed interest is NOT part of the withdraw — it stays claimable afterwards (a second tx)">Claim your interest first, then withdraw: one single payout</div>'
+              : '')
           : '';
 
       // Effective APY — only shown once deposit has matured
@@ -3153,10 +3198,18 @@ async function loadDeposits() {
         effApyStyle = 'color:var(--green);font-weight:600';
       }
 
-      return `<tr>
+      // v8.4.0: a deposit whose principal is returned and which has nothing left to
+      // claim/withdraw is CLOSED — grayed line, explicit status with the payout height.
+      const closedRow = principalPaid && claimableNum === 0 && claimedNum === 0;
+      const rowStatusBadge = closedRow
+        ? `<span class="badge">${'closed — principal returned at block ' + principalPaidH}</span>`
+        : statusBadge;
+
+      return `<tr${closedRow ? ' style="opacity:0.55"' : ''}>
         <td>${txLink(d.txid)}</td>
         <td class="text">T${tierIdx} (${TIER_SHORT[tierIdx]})</td>
         <td class="right">${fmt(d.amount)}</td>
+        ${principalCell}
         <td class="right" style="color:var(--gold)" title="${fmt(accruedDep)} from deposit pool (${depPct}%)  ${fmt(accruedFee)} from fee pool (${feePct}%)">${fmt(claimableNum)}${claimableNum > 0 ? '<div style="font-size:9px;color:var(--text-dim);white-space:nowrap">' + depPct + '% dep · ' + feePct + '% fee</div>' : ''}</td>
         <td class="right" style="color:var(--green)">${fmt(claimedNum)}</td>
         <td class="right">${fmt(earnedNum)}</td>
@@ -3166,7 +3219,7 @@ async function loadDeposits() {
         <td class="right" style="color:${blocksRemaining > 0 ? 'var(--blue)' : 'var(--green)'}">${blocksRemaining > 0 ? '~' + daysRemaining + 'd' : 'done'}</td>
         <td class="right" style="color:var(--text-dim)">${blocksRemaining > 0 && estRemaining > 0 ? '~' + fmt(estRemaining) : blocksRemaining === 0 ? 'done' : '~0'}</td>
         <td class="right" style="color:var(--green);font-weight:600">${estTotalRevenue > 0 ? '~' + fmt(estTotalRevenue) : earnedNum > 0 ? fmt(earnedNum) : '~0'}</td>
-        <td>${statusBadge}</td>
+        <td>${rowStatusBadge}</td>
         <td class="right">${blocksRemaining > 0 ? blocksRemaining.toLocaleString() : '—'}</td>
         <td style="white-space:nowrap">${claimBtn}${withdrawBtn}</td>
       </tr>`;
@@ -4175,7 +4228,9 @@ async function doWithdrawRewards(txid, pendingAmt) {
     _noteRecentOp(txid);
     _notePendingDepOp(txid, 'withdraw', r.tx_hash, pendingAmt);
     cdLog('✓ Withdraw TX: ' + shortTx(r.tx_hash), 'ok');
-    toast(`Withdraw TX sent: ${shortTx(r.tx_hash)}\nPayout: ${fmt(r.payout_amount || pendingAmt)} PBC`, 'ok');
+    if (r.principal_included)
+      cdLog('✓ Principal included: ' + fmt(Number(r.principal_amount || 0)) + ' PBC (kind 1 — once per deposit)', 'ok');
+    toast(`Withdraw TX sent: ${shortTx(r.tx_hash)}\nPayout: ${fmt(r.payout_amount || pendingAmt)} PBC${r.principal_included ? `\nPrincipal included: ${fmt(Number(r.principal_amount || 0))} PBC` : ''}`, 'ok');
     // Wait for TX confirmation: poll until it appears in 'out' with subtype='withdraw'.
     // Trigger wallet refresh each iteration so wallet processes the confirmation block.
     const _wTxid = r.tx_hash;
@@ -6825,7 +6880,7 @@ function _renderSellerRow(d, currentAskPrice) {
               ${tierBadge}
             </div>
             ${txLink(d.txid)}
-            <div style="font-size:12px;color:var(--text-dim);margin-top:3px">Principal: <strong style="color:var(--text)">${_fmtPbc(principal)}</strong> — go to Deposits to claim</div>
+            <div style="font-size:12px;color:var(--text-dim);margin-top:3px">Principal: <strong style="color:var(--text)">${_fmtPbc(principal)}</strong> — returned with the withdraw once matured</div>
           </div>
         </div>
       </div>`;

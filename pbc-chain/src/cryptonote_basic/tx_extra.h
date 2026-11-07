@@ -246,7 +246,9 @@ namespace cryptonote
   // Tag 0x56 — TERM_WITHDRAW payout specification
   // payout_amount is the public subsidy S (atomic units) which is allowed to
   // increase outputs beyond inputs for this TX (RingCT equation adjusted).
-  // payout_kind: 0 = rewards-only (initial supported mode)
+  // payout_kind: 0 = rewards-only (interests alone, unchanged v8.3.5 semantics)
+  //              1 = accounted rewards + principal (v8.4.0, once per deposit, after maturity,
+  //                  gated by PBC_PRINCIPAL_RETURN_HEIGHT; signed with the V2 messages)
   struct tx_extra_pbc_withdraw_payout
   {
     uint64_t payout_amount = 0;

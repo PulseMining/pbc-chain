@@ -2348,6 +2348,9 @@ void wallet2::scan_output(const cryptonote::transaction &tx, bool miner_tx, cons
     // Un output n'est accepte que si les TROIS conditions suivantes sont reunies :
     //   (a) la tx porte un tag type LOCK_COLLATERAL ou TRANSFER_DEPOSIT (jamais une
     //       tx ordinaire, jamais un depot — les depots restent sautes par design) ;
+    // NOTE (v8.4.0, en): from PBC_PRINCIPAL_RETURN_HEIGHT on, the deposit vout[0] is
+    // additionally frozen by consensus (it may never appear in any ring) and the
+    // protocol itself returns it via the kind-1 withdraw.
     //   (b) le montant ECDH v2 decode est > 0 ;
     //   (c) le commitment on-chain de CET output vaut EXACTEMENT amount*H (masque
     //       zero) — le montant accepte est donc forcement le montant reellement
@@ -7476,6 +7479,9 @@ std::map<uint32_t, std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> wallet2::
 //     vesting outputs are structurally excluded. The deposit output itself
 //     (zero-mask commitment) is skipped at scan time and never appears in
 //     m_transfers — only the change outputs of a deposit transaction do.
+//     Since v8.4.0 that deposit output (vout[0]) is ALSO frozen by consensus
+//     from PBC_PRINCIPAL_RETURN_HEIGHT on (any ring referencing it is rejected)
+//     and is returned by the protocol itself via the kind-1 withdraw.
 void wallet2::pbc_pending_change(uint64_t& amount, uint64_t& unlock_height_max, uint64_t& count)
 {
   amount = 0;
@@ -13835,11 +13841,46 @@ wallet2::pending_tx wallet2::create_term_withdraw_tx(const crypto::hash& deposit
   THROW_WALLET_EXCEPTION_IF(!r || dep_res.status != CORE_RPC_STATUS_OK || !dep_res.found,
     error::wallet_internal_error, "Failed to fetch deposit info from daemon (deposit not found or daemon error)");
 
-  const uint64_t payout_amount = dep_res.accumulated_reward;
+  // ── v8.4.0: payout_kind decision ──
+  // H_ACT comes from the daemon's get_info. ABSENT or 0 => INACTIVE (old daemon): default the
+  // client-side value to UINT64_MAX, NEVER 0 — otherwise a 1.1.0 wallet on an old daemon would
+  // build kind-1 txs that consensus rejects.
+  uint64_t pbc_hact = std::numeric_limits<uint64_t>::max();
+  {
+    cryptonote::COMMAND_RPC_GET_INFO::request  gi_req{};
+    cryptonote::COMMAND_RPC_GET_INFO::response gi_res{};
+    if (invoke_http_json_rpc("/json_rpc", "get_info", gi_req, gi_res, rpc_timeout)
+        && gi_res.status == CORE_RPC_STATUS_OK
+        && gi_res.pbc_principal_return_height != 0)
+      pbc_hact = gi_res.pbc_principal_return_height;
+  }
+
+  // v8.4.0: guard the +10 overflow when pbc_hact is the "inactive" sentinel (UINT64_MAX):
+  // without the guard the sum wraps and every matured deposit would be signed as kind 1.
+  const bool pbc_active = (pbc_hact <= std::numeric_limits<uint64_t>::max() - 10) && (height >= pbc_hact + 10);
+  const bool is_mature = (dep_res.unlock_height <= height);
+  const uint8_t payout_kind =
+      (pbc_active && is_mature && !dep_res.principal_paid) ? 1 : 0;
+  // 10-block margin against a reorg at the boundary: near H_ACT the wallet keeps signing V1/kind 0
+  // until the fork is deep enough that a reorg back under H_ACT is implausible.
+
+  uint64_t payout_amount = dep_res.accumulated_reward;
+  if (payout_kind == 1)
+  {
+    THROW_WALLET_EXCEPTION_IF(dep_res.ask_price > 0, error::wallet_internal_error,
+      "This deposit is listed on the marketplace. Delist it first, then withdraw its principal.");
+    THROW_WALLET_EXCEPTION_IF(dep_res.accumulated_reward > std::numeric_limits<uint64_t>::max() - dep_res.amount,
+      error::wallet_internal_error, "Principal return: payout overflow (accumulated_reward + amount)");
+    payout_amount = dep_res.accumulated_reward + dep_res.amount;
+  }
   LOG_PRINT_L0("PBC_LOG create_term_withdraw_tx: deposit_id=" << deposit_id
     << " payout_amount=" << payout_amount
-    << " accumulated_reward=" << dep_res.accumulated_reward);
-  THROW_WALLET_EXCEPTION_IF(payout_amount == 0, error::wallet_internal_error,
+    << " accumulated_reward=" << dep_res.accumulated_reward
+    << " kind=" << (unsigned)payout_kind
+    << " principal_included=" << (payout_kind == 1 ? dep_res.amount : 0));
+  // kind 0: strictly unchanged behaviour — refuse a withdraw with nothing accrued.
+  // kind 1: accumulated_reward == 0 is LEGAL (matured deposit withdrawn for its principal alone).
+  THROW_WALLET_EXCEPTION_IF(payout_kind == 0 && payout_amount == 0, error::wallet_internal_error,
     "No accumulated_reward to withdraw (did you wait for CLAIM confirmation?)");
 
   // ── PBC / spend-authority hard fork: refuse to build a transaction consensus will reject ──
@@ -13948,7 +13989,7 @@ wallet2::pending_tx wallet2::create_term_withdraw_tx(const crypto::hash& deposit
   {
     cryptonote::tx_extra_pbc_withdraw_payout pay;
     pay.payout_amount = payout_amount;
-    pay.payout_kind   = 0;
+    pay.payout_kind   = payout_kind;  // v8.4.0: 1 = rewards + principal (signed V2, once per deposit)
     cryptonote::tx_extra_field field = pay;
     serialize_field(field);
   }
@@ -13958,7 +13999,10 @@ wallet2::pending_tx wallet2::create_term_withdraw_tx(const crypto::hash& deposit
     const crypto::public_key& spend_pub = m_account.get_keys().m_account_address.m_spend_public_key;
     const crypto::secret_key& spend_sec = m_account.get_keys().m_spend_secret_key;
 
-    const crypto::hash msg_hash = cryptonote::pbc_build_withdraw_msg_hash(deposit_id, payout_amount);
+    // v8.4.0: kind 1 signs the V2 message (commits to payout_kind); kind 0 keeps V1.
+    const crypto::hash msg_hash = (payout_kind == 1)
+        ? cryptonote::pbc_build_withdraw_msg_hash_v2(deposit_id, payout_amount, payout_kind)
+        : cryptonote::pbc_build_withdraw_msg_hash(deposit_id, payout_amount);
 
     crypto::signature owner_sig;
     crypto::generate_signature(msg_hash, spend_pub, spend_sec, owner_sig);
@@ -13988,7 +14032,10 @@ wallet2::pending_tx wallet2::create_term_withdraw_tx(const crypto::hash& deposit
     ensure_pqc_keys();
     if (m_dilithium_keys_valid)
     {
-      const crypto::hash pqc_msg_hash = cryptonote::pbc_build_pqc_withdraw_msg_hash(deposit_id, payout_amount);
+      // v8.4.0: kind 1 signs the V2 PQC message (same layout as the Ed25519 V2).
+      const crypto::hash pqc_msg_hash = (payout_kind == 1)
+          ? cryptonote::pbc_build_pqc_withdraw_msg_hash_v2(deposit_id, payout_amount, payout_kind)
+          : cryptonote::pbc_build_pqc_withdraw_msg_hash(deposit_id, payout_amount);
       pqc::dilithium_signature dil_sig;
       if (pqc::dilithium_sign(dil_sig, reinterpret_cast<const uint8_t*>(&pqc_msg_hash), sizeof(pqc_msg_hash), m_dilithium_seckey))
       {
@@ -14065,6 +14112,8 @@ wallet2::pending_tx wallet2::create_term_withdraw_tx(const crypto::hash& deposit
   LOG_PRINT_L1("create_term_withdraw_tx: deposit_id=" << deposit_id
     << " txid=" << get_transaction_hash(tx)
     << " payout=" << payout_amount
+    << " kind=" << (unsigned)payout_kind
+    << " principal_included=" << (payout_kind == 1 ? dep_res.amount : 0)
     << " unlock_time=" << tx.unlock_time);
 
   return ptx;
@@ -14119,6 +14168,32 @@ std::vector<wallet2::term_deposit_record> wallet2::get_term_deposits() const
       rec.status = DEPOSIT_UNLOCKED;
     else
       rec.status = DEPOSIT_LOCKED;
+
+    // ── v8.4.0: principal payment state (daemon is authoritative) ──
+    // UNLOCKED as long as principal_paid == false; SPENT once the principal is paid AND nothing
+    // remains to claim (deposit closed).
+    if (!is_pending)
+    {
+      cryptonote::COMMAND_RPC_GET_PBC_DEPOSIT_INFO::request  pp_req{};
+      cryptonote::COMMAND_RPC_GET_PBC_DEPOSIT_INFO::response pp_res{};
+      pp_req.deposit_id = epee::string_tools::pod_to_hex(txid);
+      if (const_cast<wallet2*>(this)->invoke_http_json_rpc("/json_rpc", "get_pbc_deposit_info", pp_req, pp_res, rpc_timeout)
+          && pp_res.status == CORE_RPC_STATUS_OK && pp_res.found)
+      {
+        rec.principal_paid        = pp_res.principal_paid;
+        rec.principal_paid_height = pp_res.principal_paid ? pp_res.principal_paid_height : 0;
+        const uint64_t claimable = pp_res.claimable_deposit + pp_res.claimable_fee;
+        if (rec.principal_paid && pp_res.accumulated_reward == 0 && claimable == 0)
+          rec.status = DEPOSIT_SPENT;
+        else if (current_height >= dep.unlock_height)
+          rec.status = DEPOSIT_UNLOCKED;
+      }
+      else
+      {
+        LOG_PRINT_L1("get_term_deposits: principal state unavailable for " << txid
+                     << " (daemon unreachable or old daemon) — keeping locally-derived status");
+      }
+    }
 
     // ── Estimation ──
     rec.blocks_remaining  = (rec.status == DEPOSIT_LOCKED)

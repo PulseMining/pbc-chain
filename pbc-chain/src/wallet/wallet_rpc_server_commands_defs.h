@@ -3084,11 +3084,15 @@ namespace wallet_rpc
       std::string tx_hash;
       uint64_t    fee;
       uint64_t    payout_amount;
+      bool        principal_included;  // v8.4.0: true when this withdraw carries the principal (kind 1)
+      uint64_t    principal_amount;    // v8.4.0: principal amount included (0 when kind 0)
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(tx_hash)
         KV_SERIALIZE(fee)
         KV_SERIALIZE(payout_amount)
+        KV_SERIALIZE(principal_included)
+        KV_SERIALIZE(principal_amount)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<response_t> response;
@@ -3129,6 +3133,9 @@ namespace wallet_rpc
       uint64_t    blocks_remaining;
       uint64_t    eta_seconds;
       std::string eta_human;
+      bool        principal_paid;         // v8.4.0: true once the kind-1 payout for this deposit is applied
+      uint64_t    principal_paid_height;  // v8.4.0: block height of the principal payout (0 if not paid)
+      uint64_t    principal_claimable;    // v8.4.0: amount if mature && !principal_paid && active, else 0
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(txid)
@@ -3146,6 +3153,9 @@ namespace wallet_rpc
         KV_SERIALIZE(blocks_remaining)
         KV_SERIALIZE(eta_seconds)
         KV_SERIALIZE(eta_human)
+        KV_SERIALIZE(principal_paid)
+        KV_SERIALIZE(principal_paid_height)
+        KV_SERIALIZE(principal_claimable)
       END_KV_SERIALIZE_MAP()
     };
 
@@ -3357,6 +3367,9 @@ namespace wallet_rpc
 
       // ── Daemon data (for transparency) ──
       bool        daemon_found;        // deposit found in LMDB?
+      bool        principal_paid;         // v8.4.0: true once the kind-1 payout for this deposit is applied
+      uint64_t    principal_paid_height;  // v8.4.0: block height of the principal payout (0 if not paid)
+      uint64_t    principal_claimable;    // v8.4.0: amount if mature && !principal_paid && active, else 0
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE(txid)
@@ -3381,6 +3394,9 @@ namespace wallet_rpc
         KV_SERIALIZE(apy_realized)
         KV_SERIALIZE(blocks_elapsed)
         KV_SERIALIZE(daemon_found)
+        KV_SERIALIZE(principal_paid)
+        KV_SERIALIZE(principal_paid_height)
+        KV_SERIALIZE(principal_claimable)
       END_KV_SERIALIZE_MAP()
     };
 

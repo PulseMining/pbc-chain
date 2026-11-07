@@ -744,6 +744,7 @@ namespace cryptonote
       std::string version;
       bool synchronized;
       bool restricted;
+      uint64_t pbc_principal_return_height;  // v8.4.0: H_ACT constant (= PBC_PRINCIPAL_RETURN_HEIGHT)
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_access_response_base)
@@ -786,6 +787,7 @@ namespace cryptonote
         KV_SERIALIZE(version)
         KV_SERIALIZE(synchronized)
         KV_SERIALIZE(restricted)
+        KV_SERIALIZE(pbc_principal_return_height)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<response_t> response;
@@ -2969,6 +2971,9 @@ namespace cryptonote
       uint64_t claimable_deposit;    // TD-7: reward claimable from deposit pool
       uint64_t claimable_fee;        // TD-7: reward claimable from fee pool
       std::string owner_key;         // TD-8: hex-encoded owner public key
+      bool     principal_paid;         // v8.4.0: true once the kind-1 payout for this deposit is applied
+      uint64_t principal_paid_height;  // v8.4.0: block height of the principal payout (0 if not paid)
+      uint64_t ask_price;              // v8.4.0: active marketplace ask price for this deposit (0 if not listed)
 
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_response_base)
@@ -2986,6 +2991,9 @@ namespace cryptonote
         KV_SERIALIZE(claimable_deposit)
         KV_SERIALIZE(claimable_fee)
         KV_SERIALIZE(owner_key)
+        KV_SERIALIZE(principal_paid)
+        KV_SERIALIZE(principal_paid_height)
+        KV_SERIALIZE(ask_price)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<response_t> response;
@@ -3328,6 +3336,8 @@ namespace cryptonote
       uint64_t    lock_blocks_until_expiry = 0;
       bool        inheritance_request_active = false;
       bool        is_mature = false;
+      bool        principal_paid = false;        // v8.4.0: true once the kind-1 payout for this deposit is applied
+      uint64_t    principal_paid_height = 0;     // v8.4.0: block height of the principal payout (0 if not paid)
       BEGIN_KV_SERIALIZE_MAP()
         KV_SERIALIZE_PARENT(rpc_response_base)
         KV_SERIALIZE(found)
@@ -3351,6 +3361,8 @@ namespace cryptonote
         KV_SERIALIZE(lock_blocks_until_expiry)
         KV_SERIALIZE(inheritance_request_active)
         KV_SERIALIZE(is_mature)
+        KV_SERIALIZE(principal_paid)
+        KV_SERIALIZE(principal_paid_height)
       END_KV_SERIALIZE_MAP()
     };
     typedef epee::misc_utils::struct_init<response_t> response;
@@ -3405,6 +3417,8 @@ namespace cryptonote
       uint64_t accumulated_reward;   // total claimed so far
       uint64_t total_withdrawn;      // lifetime total of all withdraw payouts
       uint64_t claimable_now;        // currently claimable (unclaimed)
+      bool     principal_paid;         // v8.4.0: true once the kind-1 payout for this deposit is applied
+      uint64_t principal_paid_height;  // v8.4.0: block height of the principal payout (0 if not paid)
       std::vector<period_entry> periods;
 
       BEGIN_KV_SERIALIZE_MAP()
@@ -3417,6 +3431,8 @@ namespace cryptonote
         KV_SERIALIZE(accumulated_reward)
           KV_SERIALIZE(total_withdrawn)
         KV_SERIALIZE(claimable_now)
+        KV_SERIALIZE(principal_paid)
+        KV_SERIALIZE(principal_paid_height)
         KV_SERIALIZE(periods)
       END_KV_SERIALIZE_MAP()
     };

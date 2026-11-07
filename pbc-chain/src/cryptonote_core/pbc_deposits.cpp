@@ -616,7 +616,7 @@ pbc_withdraw_result pbc_validate_withdraw_tx(
     return PBC_WITHDRAW_INVALID;
   }
 
-  if (w_pay.payout_kind != 0)
+  if (w_pay.payout_kind > 1)
   {
     fail_reason = "unsupported payout_kind=" + std::to_string(w_pay.payout_kind);
     return PBC_WITHDRAW_INVALID;
@@ -670,6 +670,19 @@ crypto::hash pbc_build_withdraw_msg_hash(const crypto::hash& deposit_id, uint64_
   return crypto::cn_fast_hash(msg_data.data(), msg_data.size());
 }
 
+// v8.4.0 (payout_kind = 1, principal return): V2 message commits to payout_kind, so a kind-1
+// signature can never be replayed as kind-0 nor vice versa.
+// msg = PBC_WITHDRAW_OWNER_MSG_PREFIX_V2 || deposit_id (32 bytes) || payout_amount (8 bytes LE)
+//       || payout_kind (1 byte)
+crypto::hash pbc_build_withdraw_msg_hash_v2(const crypto::hash& deposit_id, uint64_t payout_amount, uint8_t payout_kind)
+{
+  std::string msg_data(PBC_WITHDRAW_OWNER_MSG_PREFIX_V2);
+  msg_data.append(reinterpret_cast<const char*>(&deposit_id), sizeof(crypto::hash));
+  msg_data.append(reinterpret_cast<const char*>(&payout_amount), sizeof(uint64_t));
+  msg_data.append(reinterpret_cast<const char*>(&payout_kind), sizeof(uint8_t));
+  return crypto::cn_fast_hash(msg_data.data(), msg_data.size());
+}
+
 // Problem 2 — Dilithium co-signature message. SAME layout as the Ed25519 owner_sig message but a
 // DIFFERENT domain-separation prefix, so an owner_sig can never be replayed as a PQC co-signature
 // or vice versa. Must remain byte-identical to the wallet-side construction in create_term_withdraw_tx.
@@ -678,6 +691,17 @@ crypto::hash pbc_build_pqc_withdraw_msg_hash(const crypto::hash& deposit_id, uin
   std::string msg_data(PBC_PQC_WITHDRAW_MSG_PREFIX);
   msg_data.append(reinterpret_cast<const char*>(&deposit_id), sizeof(crypto::hash));
   msg_data.append(reinterpret_cast<const char*>(&payout_amount), sizeof(uint64_t));
+  return crypto::cn_fast_hash(msg_data.data(), msg_data.size());
+}
+
+// v8.4.0 (payout_kind = 1): PQC co-signature V2 message (current PQC prefix + "_V2"), same layout
+// as the Ed25519 V2 message. Kind 0 keeps the V1 message above.
+crypto::hash pbc_build_pqc_withdraw_msg_hash_v2(const crypto::hash& deposit_id, uint64_t payout_amount, uint8_t payout_kind)
+{
+  std::string msg_data(PBC_PQC_WITHDRAW_MSG_PREFIX_V2);
+  msg_data.append(reinterpret_cast<const char*>(&deposit_id), sizeof(crypto::hash));
+  msg_data.append(reinterpret_cast<const char*>(&payout_amount), sizeof(uint64_t));
+  msg_data.append(reinterpret_cast<const char*>(&payout_kind), sizeof(uint8_t));
   return crypto::cn_fast_hash(msg_data.data(), msg_data.size());
 }
 
