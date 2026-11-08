@@ -11,11 +11,11 @@
 
 This repository hosts the **source code only** (no binaries):
 
-- **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.4.0)
-- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.1.0, Windows/Linux)
+- **`pbc-chain/`** — the full node, CLI wallet, wallet-RPC and web interface (v8.4.1)
+- **`pbc-app/`** — the all-in-one GUI wallet app (Electron, v1.1.1, Windows/Linux)
 - **`BUILD.md`** — build & setup guide (node, wallets, web UI)
 
-**Latest stable: chain v8.4.0, GUI wallet v1.1.0. Node update — all nodes and wallet users must update.**
+**Latest stable: chain v8.4.1, GUI wallet v1.1.1. Maintenance update — recommended for all node operators and wallet users.**
 
 The miner source is distributed separately and is not part of this repository.
 

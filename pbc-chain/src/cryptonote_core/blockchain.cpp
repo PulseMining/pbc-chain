@@ -1048,6 +1048,9 @@ bool Blockchain::pop_blocks(uint64_t nblocks)
       pop_block_from_blockchain();
       ++i;
     }
+    // PBC v8.4.1: expel kept_by_block txs that are dead on the final chain, ONCE,
+    // after all the pops (state is final), instead of after every popped block.
+    m_tx_pool.purge_bad_kept_by_block_txs();
   }
   catch (const std::exception& e)
   {
@@ -2357,12 +2360,15 @@ block Blockchain::pop_block_from_blockchain()
     m_tx_pool.validate(new_hf_version);
   }
 
-  // PBC FIX: After a reorg, kept_by_block TXs returned to the pool may have
-  // invalid ring signatures (their referenced output indices no longer exist in
-  // the reorganized chain). These TXs fail block template building every time
-  // but are never expelled — their key images remain in m_spent_key_images and
-  // permanently block valid new TXs using the same UTXOs. Purge them now.
-  m_tx_pool.purge_bad_kept_by_block_txs();
+  // PBC v8.4.1: purge_bad_kept_by_block_txs() is NO LONGER called here.
+  // This function runs once per popped block. During switch_to_alternative_blockchain()
+  // (and its rollback) it re-validated every kept_by_block tx against an INTERMEDIATE,
+  // lower chain height and deleted those that looked invalid there (ring member still
+  // locked, output index not created yet, ...). Those txs are valid at their real height
+  // and are needed by the blocks about to be re-added: the switch then failed with
+  // "Failed to switch to alternative blockchain" and the rollback with "PANIC! failed to
+  // add (again) block". kept_by_block txs are kept as in upstream Monero (they expire by
+  // age); the purge now runs once, after an explicit pop_blocks() (see pop_blocks()).
 
   // ═══════════════════════════════════════════════════════════════
   // PBC: Commit local batch if we started one (pop + revert atomic)
